@@ -6,8 +6,27 @@ class ScreenerService
 {
     public function __construct(
         protected StockDataService $dataService,
-        protected IndicatorService $indicators
+        protected IndicatorService $indicators,
+        protected NseService $nse
     ) {
+    }
+
+    /**
+     * Stocks the scan covers, rebuilt on every run: the configured NSE index, every
+     * company with a board meeting from the previous to the next trading day, and any
+     * extra symbols from config.
+     */
+    public function watchlist(): array
+    {
+        $meetings = $this->nse->boardMeetings(now()->subWeekday(), now()->addWeekday());
+
+        $symbols = array_merge(
+            $this->nse->indexSymbols(config('screener.universe_index')),
+            array_column($meetings, 'symbol'),
+            config('screener.watchlist'),
+        );
+
+        return array_values(array_unique(array_map('strtoupper', $symbols)));
     }
 
     /**
@@ -24,117 +43,23 @@ class ScreenerService
      */
     public function run(): array
     {
-        $baseWatchlist = config('screener.watchlist');
-
-        $calendarStocks = [
-            // Yesterday (Aug 4)
-            'BSE', 'BHARTIHEXA', 'UGROCAP', 'SAREGAMA', 'VIVIANA',
-            // Today (Aug 5)
-            'POWERGRID', 'AUROPHARMA', 'CUMMINSIND', 'BIOCON', 'BERGERPAINT', 'BIKAJI', 'GODREJAGRO', 'GNFC', 'BAYERCROP', 'NAVINFLUOR', 'NEULANDLAB', 'WHIRLPOOL', 'JKLAKSHMI', 'SNOWMAN',
-            // Tomorrow (Aug 6)
-            'HEROMOTOCO', 'TRENT'
-        ];
-
-        $watchlist = array_unique(array_merge($baseWatchlist, $calendarStocks));
-
-        $shortPeriod = config('screener.short_ma');
-        $longPeriod = config('screener.long_ma');
-        $volumeMultiplier = config('screener.volume_surge_multiplier');
-        $atrPeriod = config('screener.atr_period');
         $slMultiplier = config('screener.stop_loss_atr_multiplier');
         $rrRatio = config('screener.risk_reward_ratio');
-        $minVolume = config('screener.min_avg_volume');
 
         $results = [];
 
-        foreach ($watchlist as $symbol) {
+        foreach ($this->watchlist() as $symbol) {
             $candles = $this->dataService->getDailyCandles($symbol);
+            $ctx = $candles ? $this->dailyContext($candles) : null;
 
-            // Need enough history for EMA 26 + Signal 9 = ~35 days minimum, let's require at least 50 candles
-            if (! $candles || count($candles) < 50) {
+            if (! $ctx) {
                 continue;
             }
 
-            $closes = array_column($candles, 'close');
-            $latest = end($candles);
-            $closeNow = $latest['close'];
-            $closePrev = $candles[count($candles) - 2]['close'];
+            ['close_now' => $closeNow, 'atr' => $atr, 'volume_surge' => $volumeSurge] = $ctx;
 
-            $avgVolume = $this->indicators->averageVolume($candles);
-            $atr = $this->indicators->atr($candles, $atrPeriod);
-
-            if (! $avgVolume || ! $atr) {
-                continue;
-            }
-
-            if ($avgVolume < $minVolume) {
-                continue; // skip illiquid stocks
-            }
-
-            $volumeSurge = $latest['volume'] >= ($avgVolume * $volumeMultiplier);
-
-            // Prepare previous closes for prior indicators
-            $closesPrev = array_slice($closes, 0, -1);
-
-            // 1. Moving Average Crossover
-            $shortMaNow = $this->indicators->sma($closes, $shortPeriod);
-            $longMaNow = $this->indicators->sma($closes, $longPeriod);
-            $shortMaPrev = $this->indicators->sma($closesPrev, $shortPeriod);
-            $longMaPrev = $this->indicators->sma($closesPrev, $longPeriod);
-
-            if ($shortMaNow && $longMaNow && $shortMaPrev && $longMaPrev) {
-                if ($shortMaPrev <= $longMaPrev && $shortMaNow > $longMaNow) {
-                    $results[] = $this->buildSetup($symbol, 'MA Crossover', 'BUY', $closeNow, $atr, $slMultiplier, $rrRatio, $volumeSurge, 'below', '9 SMA crossed above 21 SMA');
-                } elseif ($shortMaPrev >= $longMaPrev && $shortMaNow < $longMaNow) {
-                    $results[] = $this->buildSetup($symbol, 'MA Crossover', 'SELL (short)', $closeNow, $atr, $slMultiplier, $rrRatio, $volumeSurge, 'above', '9 SMA crossed below 21 SMA');
-                }
-            }
-
-            // 2. RSI Reversal
-            $rsiNow = $this->indicators->rsi($closes);
-            $rsiPrev = $this->indicators->rsi($closesPrev);
-            if ($rsiNow && $rsiPrev) {
-                if ($rsiPrev <= 30 && $rsiNow > 30) {
-                    $results[] = $this->buildSetup($symbol, 'RSI Reversal', 'BUY', $closeNow, $atr, $slMultiplier, $rrRatio, $volumeSurge, 'below', 'RSI recovered from oversold territory (< 30)');
-                } elseif ($rsiPrev >= 70 && $rsiNow < 70) {
-                    $results[] = $this->buildSetup($symbol, 'RSI Reversal', 'SELL (short)', $closeNow, $atr, $slMultiplier, $rrRatio, $volumeSurge, 'above', 'RSI retreated from overbought territory (> 70)');
-                }
-            }
-
-            // 3. Bollinger Bands Breakout
-            $bbNow = $this->indicators->bollingerBands($closes);
-            $bbPrev = $this->indicators->bollingerBands($closesPrev);
-            if ($bbNow && $bbPrev) {
-                if ($closePrev <= $bbPrev['upper'] && $closeNow > $bbNow['upper']) {
-                    $results[] = $this->buildSetup($symbol, 'Bollinger Bands Breakout', 'BUY', $closeNow, $atr, $slMultiplier, $rrRatio, $volumeSurge, 'below', 'Price broke out above the Upper Bollinger Band');
-                } elseif ($closePrev >= $bbPrev['lower'] && $closeNow < $bbNow['lower']) {
-                    $results[] = $this->buildSetup($symbol, 'Bollinger Bands Breakout', 'SELL (short)', $closeNow, $atr, $slMultiplier, $rrRatio, $volumeSurge, 'above', 'Price broke down below the Lower Bollinger Band');
-                }
-            }
-
-            // 4. MACD Crossover
-            $macdData = $this->indicators->macd($closes);
-            if ($macdData) {
-                $macdNow = $macdData['macd_now'];
-                $signalNow = $macdData['signal_now'];
-                $macdPrev = $macdData['macd_prev'];
-                $signalPrev = $macdData['signal_prev'];
-
-                if ($macdPrev <= $signalPrev && $macdNow > $signalNow) {
-                    $results[] = $this->buildSetup($symbol, 'MACD Crossover', 'BUY', $closeNow, $atr, $slMultiplier, $rrRatio, $volumeSurge, 'below', 'MACD line crossed above Signal line');
-                } elseif ($macdPrev >= $signalPrev && $macdNow < $signalNow) {
-                    $results[] = $this->buildSetup($symbol, 'MACD Crossover', 'SELL (short)', $closeNow, $atr, $slMultiplier, $rrRatio, $volumeSurge, 'above', 'MACD line crossed below Signal line');
-                }
-            }
-
-            // 5. Volume Breakout
-            if ($latest['volume'] >= ($avgVolume * 2.5)) {
-                if ($closeNow > $closePrev) {
-                    $results[] = $this->buildSetup($symbol, 'Volume Breakout', 'BUY', $closeNow, $atr, $slMultiplier, $rrRatio, true, 'below', 'Price closed positive with extreme volume surge (> 2.5x avg)');
-                } else {
-                    $results[] = $this->buildSetup($symbol, 'Volume Breakout', 'SELL (short)', $closeNow, $atr, $slMultiplier, $rrRatio, true, 'above', 'Price closed negative with extreme volume surge (> 2.5x avg)');
-                }
-            }
+            // 1–5 and 8: strategies that only need daily candles
+            array_push($results, ...$this->dailySetups($symbol, $candles, $ctx));
 
             // 6. Positive Earnings Results Check (Announced in the last 48 hours)
             try {
@@ -151,20 +76,20 @@ class ScreenerService
                     foreach ($news as $item) {
                         $title = $item['title'] ?? '';
                         $publishTime = $item['providerPublishTime'] ?? 0;
-                        
+
                         // Check if article is published in last 48 hours (172800 seconds)
                         if ($publishTime >= (time() - 172800)) {
                             $titleLower = strtolower($title);
-                            $isQuarterNews = str_contains($titleLower, 'q1') || str_contains($titleLower, 'q2') || 
-                                             str_contains($titleLower, 'q3') || str_contains($titleLower, 'q4') || 
-                                             str_contains($titleLower, 'quarter') || str_contains($titleLower, 'earnings') || 
+                            $isQuarterNews = str_contains($titleLower, 'q1') || str_contains($titleLower, 'q2') ||
+                                             str_contains($titleLower, 'q3') || str_contains($titleLower, 'q4') ||
+                                             str_contains($titleLower, 'quarter') || str_contains($titleLower, 'earnings') ||
                                              str_contains($titleLower, 'financial result') || str_contains($titleLower, 'profit') ||
                                              str_contains($titleLower, 'net profit') || str_contains($titleLower, 'revenue');
 
                             if ($isQuarterNews) {
                                 // Verify positive sentiment
-                                $isPositive = str_contains($titleLower, 'rises') || str_contains($titleLower, 'up') || 
-                                              str_contains($titleLower, 'jump') || str_contains($titleLower, 'beats') || 
+                                $isPositive = str_contains($titleLower, 'rises') || str_contains($titleLower, 'up') ||
+                                              str_contains($titleLower, 'jump') || str_contains($titleLower, 'beats') ||
                                               str_contains($titleLower, 'surge') || str_contains($titleLower, 'grow') ||
                                               str_contains($titleLower, 'gain') || str_contains($titleLower, 'climbs');
 
@@ -217,18 +142,140 @@ class ScreenerService
                     ];
                 }
             }
-
-            // 8. High Momentum Gainer/Loser Strategy Check
-            $changePercent = (($closeNow - $closePrev) / $closePrev) * 100;
-            if ($changePercent >= 3.0) {
-                $results[] = $this->buildSetup($symbol, 'High Momentum', 'BUY', $closeNow, $atr, $slMultiplier, $rrRatio, $volumeSurge, 'below', "Stock surged by " . round($changePercent, 2) . "% from its previous close, showing strong daily momentum");
-            } elseif ($changePercent <= -3.0) {
-                $results[] = $this->buildSetup($symbol, 'High Momentum', 'SELL (short)', $closeNow, $atr, $slMultiplier, $rrRatio, $volumeSurge, 'above', "Stock plummeted by " . round(abs($changePercent), 2) . "% from its previous close, showing strong selling pressure");
-            }
         }
 
         // Sort by volume surge (confirmed setups first)
         usort($results, fn ($a, $b) => $b['volume_surge'] <=> $a['volume_surge']);
+
+        return $results;
+    }
+
+    /**
+     * Values every daily-candle strategy shares, or null when the stock should be
+     * skipped (not enough history, or too illiquid to trade).
+     */
+    public function dailyContext(array $candles): ?array
+    {
+        // Need enough history for EMA 26 + Signal 9 = ~35 days minimum, let's require at least 50 candles
+        if (count($candles) < 50) {
+            return null;
+        }
+
+        $latest = end($candles);
+        $avgVolume = $this->indicators->averageVolume($candles);
+        $atr = $this->indicators->atr($candles, config('screener.atr_period'));
+
+        if (! $avgVolume || ! $atr) {
+            return null;
+        }
+
+        if ($avgVolume < config('screener.min_avg_volume')) {
+            return null; // skip illiquid stocks
+        }
+
+        return [
+            'close_now' => $latest['close'],
+            'close_prev' => $candles[count($candles) - 2]['close'],
+            'avg_volume' => $avgVolume,
+            'atr' => $atr,
+            'volume_surge' => $latest['volume'] >= ($avgVolume * config('screener.volume_surge_multiplier')),
+        ];
+    }
+
+    /**
+     * Setups from the strategies that only need daily candles (MA, RSI, Bollinger,
+     * MACD, volume breakout, high momentum). The backtest replays these on past candles.
+     */
+    public function dailySetups(string $symbol, array $candles, array $ctx): array
+    {
+        $shortPeriod = config('screener.short_ma');
+        $longPeriod = config('screener.long_ma');
+        $slMultiplier = config('screener.stop_loss_atr_multiplier');
+        $rrRatio = config('screener.risk_reward_ratio');
+
+        [
+            'close_now' => $closeNow,
+            'close_prev' => $closePrev,
+            'avg_volume' => $avgVolume,
+            'atr' => $atr,
+            'volume_surge' => $volumeSurge,
+        ] = $ctx;
+
+        $latest = end($candles);
+        $closes = array_column($candles, 'close');
+
+        // Prepare previous closes for prior indicators
+        $closesPrev = array_slice($closes, 0, -1);
+
+        $results = [];
+
+        // 1. Moving Average Crossover
+        $shortMaNow = $this->indicators->sma($closes, $shortPeriod);
+        $longMaNow = $this->indicators->sma($closes, $longPeriod);
+        $shortMaPrev = $this->indicators->sma($closesPrev, $shortPeriod);
+        $longMaPrev = $this->indicators->sma($closesPrev, $longPeriod);
+
+        if ($shortMaNow && $longMaNow && $shortMaPrev && $longMaPrev) {
+            if ($shortMaPrev <= $longMaPrev && $shortMaNow > $longMaNow) {
+                $results[] = $this->buildSetup($symbol, 'MA Crossover', 'BUY', $closeNow, $atr, $slMultiplier, $rrRatio, $volumeSurge, 'below', '9 SMA crossed above 21 SMA');
+            } elseif ($shortMaPrev >= $longMaPrev && $shortMaNow < $longMaNow) {
+                $results[] = $this->buildSetup($symbol, 'MA Crossover', 'SELL (short)', $closeNow, $atr, $slMultiplier, $rrRatio, $volumeSurge, 'above', '9 SMA crossed below 21 SMA');
+            }
+        }
+
+        // 2. RSI Reversal
+        $rsiNow = $this->indicators->rsi($closes);
+        $rsiPrev = $this->indicators->rsi($closesPrev);
+        if ($rsiNow && $rsiPrev) {
+            if ($rsiPrev <= 30 && $rsiNow > 30) {
+                $results[] = $this->buildSetup($symbol, 'RSI Reversal', 'BUY', $closeNow, $atr, $slMultiplier, $rrRatio, $volumeSurge, 'below', 'RSI recovered from oversold territory (< 30)');
+            } elseif ($rsiPrev >= 70 && $rsiNow < 70) {
+                $results[] = $this->buildSetup($symbol, 'RSI Reversal', 'SELL (short)', $closeNow, $atr, $slMultiplier, $rrRatio, $volumeSurge, 'above', 'RSI retreated from overbought territory (> 70)');
+            }
+        }
+
+        // 3. Bollinger Bands Breakout
+        $bbNow = $this->indicators->bollingerBands($closes);
+        $bbPrev = $this->indicators->bollingerBands($closesPrev);
+        if ($bbNow && $bbPrev) {
+            if ($closePrev <= $bbPrev['upper'] && $closeNow > $bbNow['upper']) {
+                $results[] = $this->buildSetup($symbol, 'Bollinger Bands Breakout', 'BUY', $closeNow, $atr, $slMultiplier, $rrRatio, $volumeSurge, 'below', 'Price broke out above the Upper Bollinger Band');
+            } elseif ($closePrev >= $bbPrev['lower'] && $closeNow < $bbNow['lower']) {
+                $results[] = $this->buildSetup($symbol, 'Bollinger Bands Breakout', 'SELL (short)', $closeNow, $atr, $slMultiplier, $rrRatio, $volumeSurge, 'above', 'Price broke down below the Lower Bollinger Band');
+            }
+        }
+
+        // 4. MACD Crossover
+        $macdData = $this->indicators->macd($closes);
+        if ($macdData) {
+            $macdNow = $macdData['macd_now'];
+            $signalNow = $macdData['signal_now'];
+            $macdPrev = $macdData['macd_prev'];
+            $signalPrev = $macdData['signal_prev'];
+
+            if ($macdPrev <= $signalPrev && $macdNow > $signalNow) {
+                $results[] = $this->buildSetup($symbol, 'MACD Crossover', 'BUY', $closeNow, $atr, $slMultiplier, $rrRatio, $volumeSurge, 'below', 'MACD line crossed above Signal line');
+            } elseif ($macdPrev >= $signalPrev && $macdNow < $signalNow) {
+                $results[] = $this->buildSetup($symbol, 'MACD Crossover', 'SELL (short)', $closeNow, $atr, $slMultiplier, $rrRatio, $volumeSurge, 'above', 'MACD line crossed below Signal line');
+            }
+        }
+
+        // 5. Volume Breakout
+        if ($latest['volume'] >= ($avgVolume * 2.5)) {
+            if ($closeNow > $closePrev) {
+                $results[] = $this->buildSetup($symbol, 'Volume Breakout', 'BUY', $closeNow, $atr, $slMultiplier, $rrRatio, true, 'below', 'Price closed positive with extreme volume surge (> 2.5x avg)');
+            } else {
+                $results[] = $this->buildSetup($symbol, 'Volume Breakout', 'SELL (short)', $closeNow, $atr, $slMultiplier, $rrRatio, true, 'above', 'Price closed negative with extreme volume surge (> 2.5x avg)');
+            }
+        }
+
+        // 8. High Momentum Gainer/Loser Strategy Check
+        $changePercent = (($closeNow - $closePrev) / $closePrev) * 100;
+        if ($changePercent >= 3.0) {
+            $results[] = $this->buildSetup($symbol, 'High Momentum', 'BUY', $closeNow, $atr, $slMultiplier, $rrRatio, $volumeSurge, 'below', "Stock surged by " . round($changePercent, 2) . "% from its previous close, showing strong daily momentum");
+        } elseif ($changePercent <= -3.0) {
+            $results[] = $this->buildSetup($symbol, 'High Momentum', 'SELL (short)', $closeNow, $atr, $slMultiplier, $rrRatio, $volumeSurge, 'above', "Stock plummeted by " . round(abs($changePercent), 2) . "% from its previous close, showing strong selling pressure");
+        }
 
         return $results;
     }
@@ -280,7 +327,7 @@ class ScreenerService
         $orbHigh = -INF;
         $orbLow = INF;
         $openingCandlesCount = 0;
-        
+
         $breakoutTriggered = false;
         $breakoutType = null;
         $breakoutEntry = 0.0;

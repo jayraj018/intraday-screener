@@ -9,6 +9,14 @@ class StockDataService
 {
     protected string $baseUrl = 'https://query1.finance.yahoo.com/v8/finance/chart/';
 
+    /** Why the last fetch returned null: 'not_found', 'network', 'no_data', or null on success. */
+    protected ?string $lastError = null;
+
+    public function lastError(): ?string
+    {
+        return $this->lastError;
+    }
+
     /**
      * Fetch daily OHLCV candles for an NSE symbol.
      * Pass symbol as e.g. "RELIANCE" — .NS is appended automatically for Yahoo Finance.
@@ -21,16 +29,28 @@ class StockDataService
     public function getDailyCandles(string $symbol, string $range = '3mo'): ?array
     {
         $yahooSymbol = strtoupper($symbol) . '.NS';
+        $this->lastError = null;
 
         try {
+            // Yahoo is CDN-fronted and occasionally serves a cert chain our CA bundle
+            // can't verify, or rate-limits a burst. Retrying absorbs those blips so a
+            // single unlucky request doesn't silently drop a stock from the scan.
             $response = Http::withHeaders([
                 'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            ])->timeout(10)->get($this->baseUrl . $yahooSymbol, [
+            ])->timeout(10)->retry(3, 300, throw: false)->get($this->baseUrl . $yahooSymbol, [
                 'range' => $range,
                 'interval' => '1d',
             ]);
 
+            if ($response->status() === 404) {
+                $this->lastError = 'not_found';
+                Log::warning("StockDataService: symbol {$symbol} not listed on NSE (HTTP 404)");
+
+                return null;
+            }
+
             if (! $response->successful()) {
+                $this->lastError = 'network';
                 Log::warning("StockDataService: failed to fetch {$symbol} (HTTP {$response->status()})");
 
                 return null;
@@ -39,6 +59,7 @@ class StockDataService
             $result = $response->json('chart.result.0');
 
             if (! $result) {
+                $this->lastError = 'no_data';
                 Log::warning("StockDataService: no data returned for {$symbol}");
 
                 return null;
@@ -66,6 +87,7 @@ class StockDataService
 
             return $candles;
         } catch (\Throwable $e) {
+            $this->lastError = 'network';
             Log::error("StockDataService: exception fetching {$symbol} — " . $e->getMessage());
 
             return null;
@@ -73,17 +95,18 @@ class StockDataService
     }
 
     /**
-     * Fetch 5-minute intraday candles for the current day.
+     * Fetch 5-minute intraday candles — the current day by default. Yahoo keeps
+     * 5-minute history for at most the last 60 days.
      */
-    public function getIntradayCandles(string $symbol): ?array
+    public function getIntradayCandles(string $symbol, string $range = '1d'): ?array
     {
         $yahooSymbol = strtoupper($symbol) . '.NS';
 
         try {
             $response = Http::withHeaders([
                 'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            ])->timeout(10)->get($this->baseUrl . $yahooSymbol, [
-                'range' => '1d',
+            ])->timeout(10)->retry(3, 300, throw: false)->get($this->baseUrl . $yahooSymbol, [
+                'range' => $range,
                 'interval' => '5m',
             ]);
 

@@ -14,7 +14,7 @@ class RunMorningScreener extends Command
 
     public function handle(ScreenerService $screener): int
     {
-        $this->info('Running morning screener...');
+        $this->info('Running morning screener on ' . count($screener->watchlist()) . ' stocks...');
 
         $results = $screener->run();
 

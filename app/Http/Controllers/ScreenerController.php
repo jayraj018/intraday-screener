@@ -3,13 +3,19 @@
 namespace App\Http\Controllers;
 
 use App\Models\ScreenerResult;
+use App\Models\StrategyStat;
+use Illuminate\Http\Client\Pool;
+use Illuminate\Http\Client\Response;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Http;
+use App\Services\NseService;
 use App\Services\StockDataService;
 use App\Services\IndicatorService;
 
 class ScreenerController extends Controller
 {
-    public function index()
+    public function index(NseService $nse)
     {
         $results = ScreenerResult::where('scan_date', now()->toDateString())
             ->orderByDesc('volume_surge')
@@ -17,37 +23,64 @@ class ScreenerController extends Controller
 
         $lastScanAt = $results->first()?->created_at;
 
-        $earningsYesterday = [
-            ['symbol' => 'BSE', 'name' => 'BSE Limited'],
-            ['symbol' => 'BHARTIHEXA', 'name' => 'Bharti Hexacom'],
-            ['symbol' => 'UGROCAP', 'name' => 'UGRO Capital'],
-            ['symbol' => 'SAREGAMA', 'name' => 'Saregama India'],
-            ['symbol' => 'VIVIANA', 'name' => 'Viviana Power Tech'],
-        ];
+        // Same trading-day window the scan adds board-meeting stocks from
+        $meetings = collect($nse->boardMeetings(now()->subWeekday(), now()->addWeekday()));
+        $eventBoard = collect([
+            'Tomorrow' => now()->addWeekday(),
+            'Today' => now(),
+            'Yesterday' => now()->subWeekday(),
+        ])->map(fn ($date) => [
+            'date' => $date,
+            'events' => $meetings->where('date', $date->toDateString())->values(),
+        ]);
 
-        $earningsToday = [
-            ['symbol' => 'POWERGRID', 'name' => 'Power Grid Corp'],
-            ['symbol' => 'AUROPHARMA', 'name' => 'Aurobindo Pharma'],
-            ['symbol' => 'CUMMINSIND', 'name' => 'Cummins India'],
-            ['symbol' => 'BIOCON', 'name' => 'Biocon'],
-            ['symbol' => 'BERGERPAINT', 'name' => 'Berger Paints'],
-            ['symbol' => 'BIKAJI', 'name' => 'Bikaji Foods'],
-            ['symbol' => 'GODREJAGRO', 'name' => 'Godrej Agrovet'],
-            ['symbol' => 'GNFC', 'name' => 'GNFC'],
-            ['symbol' => 'BAYERCROP', 'name' => 'Bayer CropScience'],
-            ['symbol' => 'NAVINFLUOR', 'name' => 'Navin Fluorine'],
-            ['symbol' => 'NEULANDLAB', 'name' => 'Neuland Labs'],
-            ['symbol' => 'WHIRLPOOL', 'name' => 'Whirlpool India'],
-            ['symbol' => 'JKLAKSHMI', 'name' => 'JK Lakshmi Cement'],
-            ['symbol' => 'SNOWMAN', 'name' => 'Snowman Logistics'],
-        ];
+        $minAgree = config('screener.min_strategies_agree');
+        $minWinRate = config('screener.min_win_rate');
+        $strategyStats = StrategyStat::all()->keyBy('strategy');
+        $qualifiedStrategies = $strategyStats->filter->qualifies()->sortByDesc('win_rate');
 
-        $earningsTomorrow = [
-            ['symbol' => 'HEROMOTOCO', 'name' => 'Hero MotoCorp'],
-            ['symbol' => 'TRENT', 'name' => 'Trent Limited'],
-        ];
+        // Only strategies that proved themselves in the backtest get a vote
+        $topPicks = $this->buildTopPicks($results->whereIn('strategy', $qualifiedStrategies->keys()), $minAgree);
 
-        return view('screener.index', compact('results', 'lastScanAt', 'earningsYesterday', 'earningsToday', 'earningsTomorrow'));
+        return view('screener.index', compact('results', 'lastScanAt', 'eventBoard', 'topPicks', 'minAgree', 'minWinRate', 'strategyStats', 'qualifiedStrategies'));
+    }
+
+    /**
+     * Combine today's setups per stock and direction, keeping only stocks where at
+     * least $minAgree different strategies point the same way.
+     */
+    protected function buildTopPicks($results, int $minAgree)
+    {
+        $isBuy = fn ($r) => str_contains($r->signal, 'BUY');
+
+        return $results
+            ->groupBy(fn ($r) => $r->symbol . '|' . ($isBuy($r) ? 'BUY' : 'SELL'))
+            ->map(function ($rows, $key) use ($results, $isBuy) {
+                [$symbol, $direction] = explode('|', $key);
+
+                $opposing = $results->where('symbol', $symbol)
+                    ->filter(fn ($r) => $isBuy($r) !== ($direction === 'BUY'))
+                    ->pluck('strategy')->unique()->count();
+
+                // ORB levels come from the intraday opening range; every other strategy
+                // shares the same ATR-based levels off the daily close, so prefer those.
+                $levels = $rows->firstWhere('strategy', '!=', 'ORB + VWAP Breakout') ?? $rows->first();
+
+                return (object) [
+                    'symbol' => $symbol,
+                    'direction' => $direction,
+                    'strategies' => $rows->pluck('strategy')->unique()->values(),
+                    'score' => $rows->pluck('strategy')->unique()->count(),
+                    'opposing' => $opposing,
+                    'volume_surge' => $rows->contains('volume_surge', true),
+                    'entry' => $levels->entry,
+                    'stop_loss' => $levels->stop_loss,
+                    'target' => $levels->target,
+                ];
+            })
+            ->filter(fn ($pick) => $pick->score >= $minAgree)
+            ->sortBy([['score', 'desc'], ['opposing', 'asc'], ['volume_surge', 'desc']])
+            ->values();
     }
 
     public function api()
@@ -62,53 +95,13 @@ class ScreenerController extends Controller
     public function livePrices()
     {
         $results = ScreenerResult::where('scan_date', now()->toDateString())->get();
+        $prices = $this->currentPrices($results->pluck('symbol')->map(fn ($s) => strtoupper($s))->unique()->values()->all());
         $liveData = [];
 
         foreach ($results as $result) {
-            $yahooSymbol = strtoupper($result->symbol) . '.NS';
-            
-            try {
-                $response = \Illuminate\Support\Facades\Http::withHeaders([
-                    'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                ])->timeout(5)->get("https://query1.finance.yahoo.com/v8/finance/chart/{$yahooSymbol}", [
-                    'range' => '1d',
-                    'interval' => '1m',
-                ]);
+            $currentPrice = $prices[strtoupper($result->symbol)] ?? null;
 
-                $currentPrice = null;
-                if ($response->successful()) {
-                    $meta = $response->json('chart.result.0.meta');
-                    $currentPrice = $meta['regularMarketPrice'] ?? null;
-                }
-
-                if ($currentPrice) {
-                    $change = $currentPrice - $result->entry;
-                    $changePercent = ($change / $result->entry) * 100;
-                    
-                    // Determine trade status
-                    $status = 'Active';
-                    if (str_contains($result->signal, 'BUY')) {
-                        if ($currentPrice <= $result->stop_loss) {
-                            $status = 'SL Hit 🔴';
-                        } elseif ($currentPrice >= $result->target) {
-                            $status = 'Target Hit 🟢';
-                        }
-                    } else { // SELL (short)
-                        if ($currentPrice >= $result->stop_loss) {
-                            $status = 'SL Hit 🔴';
-                        } elseif ($currentPrice <= $result->target) {
-                            $status = 'Target Hit 🟢';
-                        }
-                    }
-
-                    $liveData[$result->id] = [
-                        'current' => round($currentPrice, 2),
-                        'change' => round($change, 2),
-                        'change_percent' => round($changePercent, 2),
-                        'status' => $status,
-                    ];
-                }
-            } catch (\Exception $e) {
+            if (! $currentPrice) {
                 // Return fallback if fetch fails
                 $liveData[$result->id] = [
                     'current' => $result->entry,
@@ -116,10 +109,71 @@ class ScreenerController extends Controller
                     'change_percent' => 0.0,
                     'status' => 'Data Delayed',
                 ];
+
+                continue;
             }
+
+            $change = $currentPrice - $result->entry;
+            $changePercent = ($change / $result->entry) * 100;
+
+            // Determine trade status
+            $status = 'Active';
+            if (str_contains($result->signal, 'BUY')) {
+                if ($currentPrice <= $result->stop_loss) {
+                    $status = 'SL Hit 🔴';
+                } elseif ($currentPrice >= $result->target) {
+                    $status = 'Target Hit 🟢';
+                }
+            } else { // SELL (short)
+                if ($currentPrice >= $result->stop_loss) {
+                    $status = 'SL Hit 🔴';
+                } elseif ($currentPrice <= $result->target) {
+                    $status = 'Target Hit 🟢';
+                }
+            }
+
+            $liveData[$result->id] = [
+                'current' => round($currentPrice, 2),
+                'change' => round($change, 2),
+                'change_percent' => round($changePercent, 2),
+                'status' => $status,
+            ];
         }
 
         return response()->json($liveData);
+    }
+
+    /**
+     * Latest price per symbol. Fetched in parallel batches — one request at a time took
+     * minutes once the scan covered hundreds of stocks — and cached briefly so the
+     * dashboard's 30-second polling doesn't refetch everything on every call.
+     */
+    protected function currentPrices(array $symbols): array
+    {
+        return Cache::remember('screener.live_prices.' . md5(implode(',', $symbols)), now()->addSeconds(20), function () use ($symbols) {
+            $prices = [];
+
+            foreach (array_chunk($symbols, 25) as $batch) {
+                $responses = Http::pool(fn (Pool $pool) => array_map(
+                    fn ($symbol) => $pool->as($symbol)->withHeaders([
+                        'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    ])->timeout(5)->get("https://query1.finance.yahoo.com/v8/finance/chart/{$symbol}.NS", [
+                        'range' => '1d',
+                        'interval' => '1m',
+                    ]),
+                    $batch
+                ));
+
+                foreach ($responses as $symbol => $response) {
+                    // A request that failed outright comes back as an exception, not a response
+                    if ($response instanceof Response && $response->successful()) {
+                        $prices[$symbol] = $response->json('chart.result.0.meta.regularMarketPrice');
+                    }
+                }
+            }
+
+            return array_filter($prices);
+        });
     }
 
     public function analyze(Request $request, StockDataService $dataService, IndicatorService $indicators)
@@ -132,8 +186,18 @@ class ScreenerController extends Controller
         $yahooSymbol = $symbol . '.NS';
         $candles = $dataService->getDailyCandles($symbol);
 
-        if (!$candles || count($candles) < 50) {
-            return response()->json(['error' => "Not enough historical data or stock '{$symbol}' not found on NSE."], 404);
+        if (!$candles) {
+            // Distinguish a genuinely unknown ticker from a transient upstream failure —
+            // reporting "not found on NSE" for a network blip sends people hunting for
+            // the wrong problem.
+            return match ($dataService->lastError()) {
+                'not_found' => response()->json(['error' => "'{$symbol}' is not a listed NSE symbol. Check the spelling, or the ticker may have changed after a merger/demerger."], 404),
+                default => response()->json(['error' => "Couldn't reach the market data provider for '{$symbol}'. This is usually temporary — please try again in a moment."], 503),
+            };
+        }
+
+        if (count($candles) < 50) {
+            return response()->json(['error' => "'{$symbol}' has only " . count($candles) . " days of history available; at least 50 are needed for these indicators. Recently listed stocks won't have enough data yet."], 422);
         }
 
         $closes = array_column($candles, 'close');

@@ -2,16 +2,25 @@
 
 return [
 
-    // Stocks to scan every morning. Add/remove NSE symbols as you like (no ".NS" suffix here).
+    // The NSE index whose stocks are scanned every run, downloaded fresh from NSE:
+    // nifty50, nifty100, nifty200 or nifty500. Companies with a board meeting
+    // (results, dividend, fund raising, buyback...) around today are always added too.
+    'universe_index' => 'nifty500',
+
+    // Extra stocks to always scan on top of the index. Add/remove NSE symbols as you like (no ".NS" suffix here).
     'watchlist' => [
         'KOTAKBANK',
         'BAJFINANCE',
         'BHARTIARTL',
         'MARUTI',
         'SUNPHARMA',
-        'TATAMOTORS',
+        // Tata Motors demerged: the old TATAMOTORS ticker no longer resolves. TMPV is
+        // the passenger-vehicle arm, TMCV the commercial-vehicle one.
+        'TMPV',
+        'TMCV',
         'TATASTEEL',
         'WIPRO',
+        'hcltech',
         'ADANIENT',
         'ULTRACEMCO',
         'HINDZINC',
@@ -38,4 +47,19 @@ return [
 
     // Skip illiquid stocks below this average daily volume
     'min_avg_volume' => 500000,
+
+    // "Top Picks" on the dashboard: a stock is shown only when at least this many
+    // different high win-rate strategies give it the same direction (BUY or SELL) on the same day
+    'min_strategies_agree' => 2,
+
+    // Backtest (`php artisan screener:backtest`): daily strategies are replayed on this much
+    // history (ORB always uses 60 days, Yahoo's limit for 5-minute data). Every trade is
+    // closed the same day — at its target, its stop-loss, or the closing price.
+    'backtest_range' => '2y',
+
+    // Only strategies with at least this backtested win rate (%) count towards Top Picks...
+    'min_win_rate' => 45,
+
+    // ...and only if the backtest produced at least this many trades, so a lucky handful doesn't qualify
+    'min_backtest_trades' => 20,
 ];

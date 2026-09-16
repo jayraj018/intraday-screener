@@ -758,6 +758,67 @@
             margin-bottom: 8px;
         }
 
+        /* Top Picks */
+        .top-picks-card {
+            border-color: rgba(245, 158, 11, 0.35);
+            margin-bottom: 30px;
+        }
+
+        .top-picks-header {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: baseline;
+            gap: 10px;
+            padding: 20px 24px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .top-picks-header h3 {
+            font-size: 16px;
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+
+        .top-picks-header span,
+        .top-picks-empty {
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        .top-picks-empty {
+            padding: 24px;
+        }
+
+        .top-picks-qualified {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 6px;
+            padding: 12px 24px;
+            font-size: 12px;
+            color: var(--text-secondary);
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .agree-score {
+            font-size: 20px;
+            font-weight: 800;
+            color: var(--accent-orange);
+        }
+
+        .opposing-note {
+            font-size: 11px;
+            color: var(--text-secondary);
+            margin-top: 2px;
+        }
+
+        .strategy-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            max-width: 340px;
+        }
+
         /* Strategy Guide Grid */
         .guide-section {
             margin-top: 60px;
@@ -1033,6 +1094,92 @@
         </div>
     </div>
 
+    @php
+        $strategyBadgeClasses = [
+            'MA Crossover' => 'strat-ma',
+            'RSI Reversal' => 'strat-rsi',
+            'Bollinger Bands Breakout' => 'strat-bb',
+            'MACD Crossover' => 'strat-macd',
+            'Volume Breakout' => 'strat-vol',
+            'Positive Earnings' => 'strat-earnings',
+            'ORB + VWAP Breakout' => 'strat-orb',
+            'High Momentum' => 'strat-high-momentum',
+        ];
+    @endphp
+
+    <!-- Top Picks: stocks where several strategies agree on the same direction -->
+    <div class="table-card top-picks-card">
+        <div class="top-picks-header">
+            <h3>⭐ Top Picks</h3>
+            <span>Stocks where {{ $minAgree }} or more strategies with a {{ $minWinRate }}%+ backtested win rate give the same signal today</span>
+        </div>
+        @if($qualifiedStrategies->isNotEmpty())
+            <div class="top-picks-qualified">
+                Counted:
+                @foreach($qualifiedStrategies as $stat)
+                    <span class="strategy-badge {{ $strategyBadgeClasses[$stat->strategy] ?? 'strat-ma' }}">{{ $stat->strategy }} · {{ round($stat->win_rate) }}%</span>
+                @endforeach
+            </div>
+        @endif
+        @if($strategyStats->isEmpty())
+            <div class="top-picks-empty">Win rates haven't been measured yet. Run <code>php artisan screener:backtest</code> first.</div>
+        @elseif($qualifiedStrategies->isEmpty())
+            <div class="top-picks-empty">No strategy reached a {{ $minWinRate }}% win rate in the last backtest, so there are no Top Picks.</div>
+        @elseif($topPicks->isEmpty())
+            <div class="top-picks-empty">No stock has {{ $minAgree }} or more of these strategies agreeing today.</div>
+        @else
+            <div style="overflow-x: auto;">
+                <table>
+                    <thead>
+                    <tr>
+                        <th>Symbol</th>
+                        <th>Signal</th>
+                        <th>Agree</th>
+                        <th>Strategies</th>
+                        <th>Entry Price</th>
+                        <th>Stop-Loss</th>
+                        <th>Target (1:2 R:R)</th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    @foreach($topPicks as $pick)
+                        <tr>
+                            <td>
+                                <div class="symbol-badge">{{ $pick->symbol }}</div>
+                                <div class="symbol-ns">NSE India</div>
+                            </td>
+                            <td>
+                                <span class="signal-pill {{ $pick->direction === 'BUY' ? 'buy' : 'sell' }}">
+                                    {{ $pick->direction === 'BUY' ? '▲ BUY' : '▼ SELL' }}
+                                </span>
+                                @if($pick->volume_surge)
+                                    <span class="volume-badge">Vol Surge</span>
+                                @endif
+                            </td>
+                            <td>
+                                <span class="agree-score">{{ $pick->score }}</span>
+                                @if($pick->opposing)
+                                    <div class="opposing-note">⚠ {{ $pick->opposing }} opposite</div>
+                                @endif
+                            </td>
+                            <td>
+                                <div class="strategy-list">
+                                    @foreach($pick->strategies as $strategy)
+                                        <span class="strategy-badge {{ $strategyBadgeClasses[$strategy] ?? 'strat-ma' }}">{{ $strategy }} · {{ round($strategyStats[$strategy]->win_rate) }}%</span>
+                                    @endforeach
+                                </div>
+                            </td>
+                            <td class="price-val">₹{{ number_format($pick->entry, 2) }}</td>
+                            <td class="price-val" style="color: var(--accent-red);">₹{{ number_format($pick->stop_loss, 2) }}</td>
+                            <td class="price-val" style="color: var(--accent-green);">₹{{ number_format($pick->target, 2) }}</td>
+                        </tr>
+                    @endforeach
+                    </tbody>
+                </table>
+            </div>
+        @endif
+    </div>
+
     <!-- Layout Wrapper -->
     <div class="main-layout">
         <!-- Left Side: Table & Filters -->
@@ -1080,17 +1227,7 @@
                                     <div class="symbol-ns">NSE India</div>
                                 </td>
                                 <td>
-                                    @php
-                                        $badgeClass = 'strat-ma';
-                                        if($r->strategy === 'RSI Reversal') $badgeClass = 'strat-rsi';
-                                        if($r->strategy === 'Bollinger Bands Breakout') $badgeClass = 'strat-bb';
-                                        if($r->strategy === 'MACD Crossover') $badgeClass = 'strat-macd';
-                                        if($r->strategy === 'Volume Breakout') $badgeClass = 'strat-vol';
-                                        if($r->strategy === 'Positive Earnings') $badgeClass = 'strat-earnings';
-                                        if($r->strategy === 'ORB + VWAP Breakout') $badgeClass = 'strat-orb';
-                                        if($r->strategy === 'High Momentum') $badgeClass = 'strat-high-momentum';
-                                    @endphp
-                                    <span class="strategy-badge {{ $badgeClass }}">{{ $r->strategy }}</span>
+                                    <span class="strategy-badge {{ $strategyBadgeClasses[$r->strategy] ?? 'strat-ma' }}">{{ $r->strategy }}</span>
                                 </td>
                                 <td>
                                     <span class="signal-pill {{ str_contains($r->signal, 'BUY') ? 'buy' : 'sell' }}">
@@ -1126,47 +1263,25 @@
         <!-- Right Side: Earnings Calendar Widget -->
         <div class="right-col">
             <div class="calendar-card">
-                <h3>📅 Earnings Event Board</h3>
-                <p style="font-size:12px; color:var(--text-secondary); margin-bottom:15px; line-height:1.4;">Quarterly results releases that trigger massive volatility. Click Analyze to run deep technical analysis on any stock.</p>
-                
-                <div class="calendar-section-title">Tomorrow's Results (Aug 6)</div>
-                <div class="calendar-list">
-                    @foreach($earningsTomorrow as $earnings)
-                        <div class="calendar-item">
-                            <div class="calendar-item-info">
-                                <span class="calendar-symbol">{{ $earnings['symbol'] }}</span>
-                                <span class="calendar-name" title="{{ $earnings['name'] }}">{{ $earnings['name'] }}</span>
-                            </div>
-                            <button class="calendar-action-btn" onclick="triggerCalendarSearch('{{ $earnings['symbol'] }}')">Analyze</button>
-                        </div>
-                    @endforeach
-                </div>
+                <h3>📅 Corporate Events Board</h3>
+                <p style="font-size:12px; color:var(--text-secondary); margin-bottom:15px; line-height:1.4;">Live NSE board meetings — results, dividends, fund raising and buybacks can move a stock sharply. Click Analyze to run deep technical analysis on any stock.</p>
 
-                <div class="calendar-section-title">Today's Results (Aug 5)</div>
-                <div class="calendar-list">
-                    @foreach($earningsToday as $earnings)
-                        <div class="calendar-item">
-                            <div class="calendar-item-info">
-                                <span class="calendar-symbol">{{ $earnings['symbol'] }}</span>
-                                <span class="calendar-name" title="{{ $earnings['name'] }}">{{ $earnings['name'] }}</span>
+                @foreach($eventBoard as $label => $day)
+                    <div class="calendar-section-title">{{ $label }} ({{ $day['date']->format('D, d M') }})</div>
+                    <div class="calendar-list">
+                        @forelse($day['events'] as $event)
+                            <div class="calendar-item">
+                                <div class="calendar-item-info">
+                                    <span class="calendar-symbol">{{ $event['symbol'] }}</span>
+                                    <span class="calendar-name" title="{{ $event['name'] }} — {{ $event['purpose'] }}">{{ $event['purpose'] }}</span>
+                                </div>
+                                <button class="calendar-action-btn" onclick="triggerCalendarSearch('{{ $event['symbol'] }}')">Analyze</button>
                             </div>
-                            <button class="calendar-action-btn" onclick="triggerCalendarSearch('{{ $earnings['symbol'] }}')">Analyze</button>
-                        </div>
-                    @endforeach
-                </div>
-
-                <div class="calendar-section-title">Yesterday's Results (Aug 4)</div>
-                <div class="calendar-list">
-                    @foreach($earningsYesterday as $earnings)
-                        <div class="calendar-item">
-                            <div class="calendar-item-info">
-                                <span class="calendar-symbol">{{ $earnings['symbol'] }}</span>
-                                <span class="calendar-name" title="{{ $earnings['name'] }}">{{ $earnings['name'] }}</span>
-                            </div>
-                            <button class="calendar-action-btn" onclick="triggerCalendarSearch('{{ $earnings['symbol'] }}')">Analyze</button>
-                        </div>
-                    @endforeach
-                </div>
+                        @empty
+                            <div style="font-size:12px; color:var(--text-secondary);">No board meetings.</div>
+                        @endforelse
+                    </div>
+                @endforeach
             </div>
         </div>
     </div>
@@ -1235,7 +1350,12 @@
     }
 
     // Fetch live prices and update elements
+    let livePricesLoading = false;
     function fetchLivePrices() {
+        // A refresh can outlast the 30s interval; stacking requests blocks the single-threaded dev server
+        if (livePricesLoading) return;
+        livePricesLoading = true;
+
         fetch('{{ route('screener.live') }}')
             .then(res => res.json())
             .then(data => {
@@ -1269,7 +1389,8 @@
                     }
                 });
             })
-            .catch(err => console.error("Error fetching live quotes:", err));
+            .catch(err => console.error("Error fetching live quotes:", err))
+            .finally(() => { livePricesLoading = false; });
     }
 
     // Trigger search from the earnings widget
@@ -1483,7 +1604,17 @@
             })
             .catch(err => {
                 reportCard.style.borderColor = 'var(--accent-red)';
-                document.getElementById('analysisSetupList').innerHTML = `<div style="color: var(--accent-red); font-size: 14px;">Error: ${err.message}</div>`;
+                document.getElementById('analysisSetupList').innerHTML = `<div style="color: var(--accent-red); font-size: 14px;">${err.message}</div>`;
+
+                // Clear the placeholders too — otherwise the card sits on "Loading..."
+                // and "--" forever, looking like a hang rather than a failed request.
+                document.getElementById('analysisPrice').innerText = 'Unavailable';
+                document.getElementById('analysisNewsList').innerHTML = '<div style="color: var(--text-secondary); font-size: 13px;">No data — analysis did not complete.</div>';
+                ['ma', 'rsi', 'bb', 'macd', 'vol'].forEach(k => {
+                    document.getElementById(k + 'Val').innerText = '--';
+                    document.getElementById(k + 'Status').innerText = 'No data';
+                    document.getElementById(k + 'Detail').innerText = 'Unavailable';
+                });
             });
     }
 
