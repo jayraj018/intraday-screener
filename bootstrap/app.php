@@ -11,7 +11,11 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware): void {
-        //
+        // Render (and most hosts) terminate TLS at the edge and forward plain HTTP to the
+        // container, so route() and asset() emit http:// links that browsers block on an
+        // https page as mixed content. Trusting the proxy's X-Forwarded-Proto header makes
+        // Laravel generate https:// again.
+        $middleware->trustProxies(at: '*');
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         //
