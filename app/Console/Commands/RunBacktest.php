@@ -6,14 +6,52 @@ use App\Models\StrategyStat;
 use App\Services\BacktestService;
 use App\Services\ScreenerService;
 use Illuminate\Console\Command;
+use Illuminate\Contracts\Console\Isolatable;
+use Illuminate\Support\Facades\Cache;
 
-class RunBacktest extends Command
+class RunBacktest extends Command implements Isolatable
 {
+    /** Progress for /api/backtest-status, which can't see this process directly. */
+    public const STATUS_CACHE_KEY = 'backtest.status';
+
     protected $signature = 'screener:backtest';
 
     protected $description = 'Replay each strategy on past data, save its same-day win rate, and decide which count towards Top Picks';
 
+    protected string $startedAt;
+
     public function handle(BacktestService $backtest, ScreenerService $screener): int
+    {
+        $this->startedAt = now()->toIso8601String();
+        $this->recordStatus(['state' => 'running', 'started_at' => $this->startedAt, 'heartbeat_at' => $this->startedAt]);
+
+        try {
+            $result = $this->runBacktest($backtest, $screener);
+        } catch (\Throwable $e) {
+            $this->recordStatus(['state' => 'failed', 'started_at' => $this->startedAt, 'finished_at' => now()->toIso8601String(), 'error' => $e->getMessage()]);
+
+            throw $e;
+        }
+
+        $this->recordStatus([
+            'state' => $result === self::SUCCESS ? 'finished' : 'failed',
+            'started_at' => $this->startedAt,
+            'finished_at' => now()->toIso8601String(),
+        ]);
+
+        return $result;
+    }
+
+    /**
+     * On a small instance the run can take well over the default one-hour isolation lock,
+     * which would let a second run start on top of the first.
+     */
+    public function isolationLockExpiresAt()
+    {
+        return now()->addHours(6);
+    }
+
+    protected function runBacktest(BacktestService $backtest, ScreenerService $screener): int
     {
         $symbols = $screener->watchlist();
 
@@ -21,7 +59,20 @@ class RunBacktest extends Command
 
         $bar = $this->output->createProgressBar(count($symbols));
         $bar->start();
-        $tally = $backtest->run($symbols, fn () => $bar->advance());
+
+        $done = 0;
+        $tally = $backtest->run($symbols, function () use ($bar, &$done, $symbols) {
+            $bar->advance();
+
+            // Heartbeat: if the process dies (free instances sleep and restart), this stops
+            // updating and the web trigger knows it may start a new run instead of refusing.
+            $this->recordStatus([
+                'state' => 'running',
+                'started_at' => $this->startedAt,
+                'heartbeat_at' => now()->toIso8601String(),
+                'progress' => ++$done . '/' . count($symbols),
+            ]);
+        });
         $bar->finish();
         $this->newLine(2);
 
@@ -61,5 +112,10 @@ class RunBacktest extends Command
         $this->comment('Positive Earnings can\'t be backtested (no old news data), so it never counts towards Top Picks.');
 
         return self::SUCCESS;
+    }
+
+    protected function recordStatus(array $status): void
+    {
+        Cache::put(self::STATUS_CACHE_KEY, $status, now()->addDays(7));
     }
 }

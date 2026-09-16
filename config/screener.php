@@ -62,4 +62,8 @@ return [
 
     // ...and only if the backtest produced at least this many trades, so a lucky handful doesn't qualify
     'min_backtest_trades' => 20,
+
+    // Secret required to start a backtest from the web (/api/run-backtest?token=...).
+    // Leave unset to disable that URL entirely.
+    'backtest_token' => env('BACKTEST_TOKEN'),
 ];
