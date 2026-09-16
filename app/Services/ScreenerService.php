@@ -41,7 +41,7 @@ class ScreenerService
      * next — treat every result as a candidate to verify yourself, not a
      * guaranteed winner.
      */
-    public function run(): array
+    public function run(?callable $onEachSymbol = null): array
     {
         $slMultiplier = config('screener.stop_loss_atr_multiplier');
         $rrRatio = config('screener.risk_reward_ratio');
@@ -49,6 +49,11 @@ class ScreenerService
         $results = [];
 
         foreach ($this->watchlist() as $symbol) {
+            // Called before any skip below, so progress counts every stock
+            if ($onEachSymbol) {
+                $onEachSymbol($symbol);
+            }
+
             $candles = $this->dataService->getDailyCandles($symbol);
             $ctx = $candles ? $this->dailyContext($candles) : null;
 

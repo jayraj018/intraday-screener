@@ -113,7 +113,7 @@
 
         .search-box-container {
             flex: 1;
-            min-width: 250px;
+            min-width: min(250px, 100%);
             position: relative;
         }
 
@@ -258,7 +258,7 @@
 
         .setup-list {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr));
             gap: 16px;
         }
 
@@ -282,7 +282,7 @@
 
         .analysis-indicators-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
             gap: 20px;
             margin-bottom: 30px;
         }
@@ -376,7 +376,7 @@
 
         .news-info {
             flex: 1;
-            min-width: 250px;
+            min-width: min(250px, 100%);
         }
 
         .news-title {
@@ -411,7 +411,7 @@
         /* Stats Grid */
         .stats-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
             gap: 20px;
             margin-bottom: 30px;
         }
@@ -605,7 +605,9 @@
             background: var(--card-dark);
             border: 1px solid var(--border-color);
             border-radius: 20px;
-            overflow: hidden;
+            /* auto, not hidden: still clips to the rounded corners, but wide tables scroll
+               sideways on tablets instead of having their right-hand columns cut off */
+            overflow-x: auto;
             box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
             margin-bottom: 40px;
         }
@@ -833,7 +835,7 @@
 
         .guide-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
             gap: 24px;
         }
 
@@ -886,9 +888,244 @@
             .main-layout {
                 flex-direction: column;
             }
+            .left-col {
+                width: 100%;
+            }
             .right-col {
                 width: 100%;
+                min-width: 0;
                 position: static;
+                /* Stacked, the setups table can run to hundreds of rows; keep the short
+                   events board above it instead of at the very bottom of the page */
+                order: -1;
+            }
+        }
+
+        /* Phones */
+        @media (max-width: 640px) {
+            body {
+                padding: 20px 12px;
+            }
+
+            header {
+                margin-bottom: 20px;
+                padding-bottom: 16px;
+            }
+
+            .logo-area h1 {
+                font-size: 24px;
+            }
+
+            .logo-area p,
+            .scan-time {
+                font-size: 12px;
+            }
+
+            .search-section {
+                padding: 14px;
+                margin-bottom: 20px;
+            }
+
+            .search-btn {
+                width: 100%;
+            }
+
+            .analysis-card {
+                padding: 20px 16px;
+                margin-bottom: 24px;
+            }
+
+            .close-analysis-btn {
+                top: 12px;
+                right: 12px;
+            }
+
+            .analysis-header {
+                padding-right: 36px; /* keep the symbol clear of the close button */
+            }
+
+            .analysis-title-group h2 {
+                font-size: 22px;
+            }
+
+            .analysis-price-group {
+                text-align: left;
+            }
+
+            .analysis-price {
+                font-size: 24px;
+            }
+
+            .analysis-setups-section,
+            .intraday-setup-section {
+                padding: 16px !important;
+            }
+
+            .news-header {
+                flex-wrap: wrap;
+                gap: 8px;
+            }
+
+            /* Three compact stats side by side rather than three full-width rows */
+            .stats-grid {
+                grid-template-columns: repeat(3, 1fr);
+                gap: 10px;
+                margin-bottom: 20px;
+            }
+
+            .stat-card {
+                padding: 14px 12px;
+            }
+
+            .stat-label {
+                font-size: 10px;
+                letter-spacing: 0.5px;
+            }
+
+            .stat-value {
+                font-size: 26px;
+            }
+
+            .filter-btn {
+                padding: 8px 14px;
+                font-size: 13px;
+            }
+
+            .top-picks-header,
+            .top-picks-qualified {
+                padding-left: 16px;
+                padding-right: 16px;
+            }
+
+            .empty-state {
+                padding: 48px 20px;
+            }
+
+            /* Tables become one card per row: label on the left, value on the right.
+               Cells keep their ids, so the live price/status updates still find them. */
+            .card-table thead {
+                display: none;
+            }
+
+            .card-table,
+            .card-table tbody,
+            .card-table tr {
+                display: block;
+                width: 100%;
+            }
+
+            /* Grid so Entry / Stop-Loss / Target sit side by side; every other cell spans the row */
+            .card-table tr {
+                display: grid;
+                grid-template-columns: repeat(3, 1fr);
+                column-gap: 12px;
+                padding: 14px 16px;
+                border-bottom: 1px solid var(--border-color);
+            }
+
+            .card-table tr:last-child {
+                border-bottom: none;
+            }
+
+            .card-table td {
+                grid-column: 1 / -1;
+                display: flex;
+                justify-content: flex-end;
+                align-items: center;
+                gap: 8px;
+                padding: 6px 0;
+                border-bottom: none;
+                text-align: right;
+            }
+
+            .card-table td::before {
+                content: attr(data-label);
+                flex-shrink: 0;
+                /* price cells use a monospace font; labels shouldn't inherit it */
+                font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                margin-right: auto; /* label left; however many value pieces follow stay grouped on the right */
+                font-size: 11px;
+                font-weight: 600;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                color: var(--text-secondary);
+                text-align: left;
+            }
+
+            .card-table tr:hover td {
+                background: transparent;
+            }
+
+            .card-table td.cell-title {
+                display: block;
+                text-align: left;
+                padding-bottom: 8px;
+            }
+
+            .card-table td.cell-title::before,
+            .card-table td.cell-block::before {
+                display: block;
+                margin-bottom: 6px;
+            }
+
+            .card-table td.cell-title::before {
+                content: none;
+            }
+
+            .card-table td.cell-block {
+                display: block;
+                text-align: left;
+            }
+
+            .card-table td.cell-price {
+                grid-column: auto;
+                display: block;
+                text-align: left;
+                padding-top: 10px;
+                font-size: 14px;
+            }
+
+            .card-table td.cell-price::before {
+                display: block;
+                margin-right: 0;
+                margin-bottom: 2px;
+            }
+
+            .card-table .strategy-list {
+                max-width: none;
+                justify-content: flex-end;
+            }
+
+            .card-table .live-price-container {
+                align-items: flex-end;
+            }
+
+            .reason-text {
+                max-width: none;
+            }
+
+            .calendar-card {
+                padding: 18px 16px;
+            }
+
+            .calendar-name {
+                max-width: 45vw;
+            }
+
+            .guide-section {
+                margin-top: 40px;
+            }
+
+            .guide-section h2 {
+                font-size: 18px;
+            }
+
+            .guide-card {
+                padding: 18px;
+            }
+
+            .disclaimer {
+                margin-top: 40px;
             }
         }
     </style>
@@ -1129,7 +1366,7 @@
             <div class="top-picks-empty">No stock has {{ $minAgree }} or more of these strategies agreeing today.</div>
         @else
             <div style="overflow-x: auto;">
-                <table>
+                <table class="card-table">
                     <thead>
                     <tr>
                         <th>Symbol</th>
@@ -1144,11 +1381,11 @@
                     <tbody>
                     @foreach($topPicks as $pick)
                         <tr>
-                            <td>
+                            <td class="cell-title">
                                 <div class="symbol-badge">{{ $pick->symbol }}</div>
                                 <div class="symbol-ns">NSE India</div>
                             </td>
-                            <td>
+                            <td data-label="Signal">
                                 <span class="signal-pill {{ $pick->direction === 'BUY' ? 'buy' : 'sell' }}">
                                     {{ $pick->direction === 'BUY' ? '▲ BUY' : '▼ SELL' }}
                                 </span>
@@ -1156,22 +1393,22 @@
                                     <span class="volume-badge">Vol Surge</span>
                                 @endif
                             </td>
-                            <td>
+                            <td data-label="Agree">
                                 <span class="agree-score">{{ $pick->score }}</span>
                                 @if($pick->opposing)
                                     <div class="opposing-note">⚠ {{ $pick->opposing }} opposite</div>
                                 @endif
                             </td>
-                            <td>
+                            <td class="cell-block" data-label="Strategies">
                                 <div class="strategy-list">
                                     @foreach($pick->strategies as $strategy)
                                         <span class="strategy-badge {{ $strategyBadgeClasses[$strategy] ?? 'strat-ma' }}">{{ $strategy }} · {{ round($strategyStats[$strategy]->win_rate) }}%</span>
                                     @endforeach
                                 </div>
                             </td>
-                            <td class="price-val">₹{{ number_format($pick->entry, 2) }}</td>
-                            <td class="price-val" style="color: var(--accent-red);">₹{{ number_format($pick->stop_loss, 2) }}</td>
-                            <td class="price-val" style="color: var(--accent-green);">₹{{ number_format($pick->target, 2) }}</td>
+                            <td class="price-val cell-price" data-label="Entry">₹{{ number_format($pick->entry, 2) }}</td>
+                            <td class="price-val cell-price" data-label="Stop-Loss" style="color: var(--accent-red);">₹{{ number_format($pick->stop_loss, 2) }}</td>
+                            <td class="price-val cell-price" data-label="Target" style="color: var(--accent-green);">₹{{ number_format($pick->target, 2) }}</td>
                         </tr>
                     @endforeach
                     </tbody>
@@ -1205,7 +1442,7 @@
                         <p>Ensure the screener command (`php artisan screener:run`) has run, or customize criteria to find more setups.</p>
                     </div>
                 @else
-                    <table id="setupsTable">
+                    <table id="setupsTable" class="card-table">
                         <thead>
                         <tr>
                             <th>Symbol</th>
@@ -1222,14 +1459,14 @@
                         <tbody>
                         @foreach($results as $r)
                             <tr class="setup-row" data-strategy="{{ $r->strategy }}">
-                                <td>
+                                <td class="cell-title">
                                     <div class="symbol-badge">{{ $r->symbol }}</div>
                                     <div class="symbol-ns">NSE India</div>
                                 </td>
-                                <td>
+                                <td data-label="Strategy">
                                     <span class="strategy-badge {{ $strategyBadgeClasses[$r->strategy] ?? 'strat-ma' }}">{{ $r->strategy }}</span>
                                 </td>
-                                <td>
+                                <td data-label="Signal">
                                     <span class="signal-pill {{ str_contains($r->signal, 'BUY') ? 'buy' : 'sell' }}">
                                         {{ str_contains($r->signal, 'BUY') ? '▲ BUY' : '▼ SELL' }}
                                     </span>
@@ -1237,19 +1474,19 @@
                                         <span class="volume-badge">Vol Surge</span>
                                     @endif
                                 </td>
-                                <td class="price-val">₹{{ number_format($r->entry, 2) }}</td>
-                                <td class="price-val" style="color: var(--accent-red);">₹{{ number_format($r->stop_loss, 2) }}</td>
-                                <td class="price-val" style="color: var(--accent-green);">₹{{ number_format($r->target, 2) }}</td>
-                                <td class="price-val" id="live-price-{{ $r->id }}">
+                                <td class="price-val cell-price" data-label="Entry">₹{{ number_format($r->entry, 2) }}</td>
+                                <td class="price-val cell-price" data-label="Stop-Loss" style="color: var(--accent-red);">₹{{ number_format($r->stop_loss, 2) }}</td>
+                                <td class="price-val cell-price" data-label="Target" style="color: var(--accent-green);">₹{{ number_format($r->target, 2) }}</td>
+                                <td class="price-val" data-label="Live Price" id="live-price-{{ $r->id }}">
                                     <div class="live-price-container">
                                         <span>Loading...</span>
                                         <span class="live-percent">--</span>
                                     </div>
                                 </td>
-                                <td id="live-status-{{ $r->id }}">
+                                <td data-label="Status" id="live-status-{{ $r->id }}">
                                     <span class="status-pill active">Connecting...</span>
                                 </td>
-                                <td>
+                                <td class="cell-block" data-label="Reason">
                                     <div class="reason-text">{{ $r->reason }}</div>
                                 </td>
                             </tr>
