@@ -221,155 +221,22 @@ class ScreenerController extends Controller
         $livePrice = $sessionRunning ? end($allCandles)['close'] : $closeNow;
         $referenceClose = $sessionRunning ? $closeNow : $closePrev;
 
-        $avgVolume = $indicators->averageVolume($candles);
-        $atr = $indicators->atr($candles, 14);
+        // Every strategy, indicator period and stop distance comes from the same place the
+        // screener uses. These were re-implemented here with 9, 21, 1.5 and 2.0 hardcoded,
+        // so changing config/screener.php moved the screener and left this page behind —
+        // the same stock could show one set of levels here and another on the dashboard.
+        //
+        // dailyContext() is asked to skip its liquidity floor: that filter decides which
+        // stocks are worth scanning, and someone searching a specific symbol has already
+        // made that choice. The strategy rules themselves are identical.
+        $ctx = $screener->dailyContext($candles, requireLiquidity: false);
+        $setups = $ctx ? $screener->dailySetups($symbol, $candles, $ctx) : [];
 
-        $closesPrev = array_slice($closes, 0, -1);
-
-        $indicatorDetails = [];
-        $setups = [];
-        $bullishCount = 0;
-        $bearishCount = 0;
-
-        // 1. MA Crossover Check
-        $shortMaNow = $indicators->sma($closes, 9);
-        $longMaNow = $indicators->sma($closes, 21);
-        $shortMaPrev = $indicators->sma($closesPrev, 9);
-        $longMaPrev = $indicators->sma($closesPrev, 21);
-
-        $maStatus = 'Neutral';
-        $maDetail = 'Short MA is flat';
-        if ($shortMaNow && $longMaNow) {
-            if ($shortMaNow > $longMaNow) {
-                $maStatus = 'Bullish';
-                $maDetail = '9 SMA is trending above 21 SMA';
-                $bullishCount++;
-            } else {
-                $maStatus = 'Bearish';
-                $maDetail = '9 SMA is trending below 21 SMA';
-                $bearishCount++;
-            }
-            // Check crossover trigger
-            if ($shortMaPrev <= $longMaPrev && $shortMaNow > $longMaNow) {
-                $setups[] = $this->buildAnalysisSetup('MA Crossover', 'BUY', $closeNow, $atr, 1.5, 2.0, '9 SMA crossed above 21 SMA today');
-            } elseif ($shortMaPrev >= $longMaPrev && $shortMaNow < $longMaNow) {
-                $setups[] = $this->buildAnalysisSetup('MA Crossover', 'SELL (short)', $closeNow, $atr, 1.5, 2.0, '9 SMA crossed below 21 SMA today');
-            }
-        }
-        $indicatorDetails['ma'] = ['status' => $maStatus, 'detail' => $maDetail, 'short_val' => round($shortMaNow, 2), 'long_val' => round($longMaNow, 2)];
-
-        // 2. RSI Check
-        $rsiNow = $indicators->rsi($closes);
-        $rsiPrev = $indicators->rsi($closesPrev);
-        $rsiStatus = 'Neutral';
-        $rsiDetail = 'RSI is in healthy territory';
-        if ($rsiNow) {
-            if ($rsiNow < 30) {
-                $rsiStatus = 'Oversold / Reversal Watch';
-                $rsiDetail = 'RSI is deeply oversold (< 30). Watch for pullback';
-                $bullishCount++; // oversold is bullish reversal watch
-            } elseif ($rsiNow > 70) {
-                $rsiStatus = 'Overbought / Reversal Watch';
-                $rsiDetail = 'RSI is overbought (> 70). Risk of correction';
-                $bearishCount++;
-            } else {
-                if ($rsiNow > $rsiPrev) {
-                    $rsiDetail = 'RSI is neutral and rising';
-                } else {
-                    $rsiDetail = 'RSI is neutral and falling';
-                }
-            }
-            // Check triggers
-            if ($rsiPrev <= 30 && $rsiNow > 30) {
-                $setups[] = $this->buildAnalysisSetup('RSI Reversal', 'BUY', $closeNow, $atr, 1.5, 2.0, 'RSI crossed back above 30 (bullish recovery)');
-            } elseif ($rsiPrev >= 70 && $rsiNow < 70) {
-                $setups[] = $this->buildAnalysisSetup('RSI Reversal', 'SELL (short)', $closeNow, $atr, 1.5, 2.0, 'RSI slipped back below 70 (bearish correction)');
-            }
-        }
-        $indicatorDetails['rsi'] = ['status' => $rsiStatus, 'detail' => $rsiDetail, 'value' => round($rsiNow, 2)];
-
-        // 3. Bollinger Bands Check
-        $bbNow = $indicators->bollingerBands($closes);
-        $bbPrev = $indicators->bollingerBands($closesPrev);
-        $bbStatus = 'Neutral';
-        $bbDetail = 'Price is inside standard volatility bands';
-        if ($bbNow) {
-            if ($closeNow > $bbNow['upper']) {
-                $bbStatus = 'Bullish Breakout';
-                $bbDetail = 'Price closed outside Upper Bollinger Band';
-                $bullishCount++;
-            } elseif ($closeNow < $bbNow['lower']) {
-                $bbStatus = 'Bearish Breakdown';
-                $bbDetail = 'Price closed outside Lower Bollinger Band';
-                $bearishCount++;
-            }
-            // Crossovers
-            if ($closePrev <= $bbPrev['upper'] && $closeNow > $bbNow['upper']) {
-                $setups[] = $this->buildAnalysisSetup('Bollinger Bands Breakout', 'BUY', $closeNow, $atr, 1.5, 2.0, 'Price broke above Upper Bollinger Band today');
-            } elseif ($closePrev >= $bbPrev['lower'] && $closeNow < $bbNow['lower']) {
-                $setups[] = $this->buildAnalysisSetup('Bollinger Bands Breakout', 'SELL (short)', $closeNow, $atr, 1.5, 2.0, 'Price broke below Lower Bollinger Band today');
-            }
-        }
-        $indicatorDetails['bb'] = [
-            'status' => $bbStatus, 
-            'detail' => $bbDetail, 
-            'upper' => round($bbNow['upper'], 2), 
-            'middle' => round($bbNow['middle'], 2), 
-            'lower' => round($bbNow['lower'], 2)
-        ];
-
-        // 4. MACD Check
-        $macdData = $indicators->macd($closes);
-        $macdStatus = 'Neutral';
-        $macdDetail = 'MACD is neutral';
-        if ($macdData) {
-            if ($macdData['macd_now'] > $macdData['signal_now']) {
-                $macdStatus = 'Bullish';
-                $macdDetail = 'MACD line is above signal line';
-                $bullishCount++;
-            } else {
-                $macdStatus = 'Bearish';
-                $macdDetail = 'MACD line is below signal line';
-                $bearishCount++;
-            }
-            // Check crossover
-            if ($macdData['macd_prev'] <= $macdData['signal_prev'] && $macdData['macd_now'] > $macdData['signal_now']) {
-                $setups[] = $this->buildAnalysisSetup('MACD Crossover', 'BUY', $closeNow, $atr, 1.5, 2.0, 'MACD line crossed above signal line today');
-            } elseif ($macdData['macd_prev'] >= $macdData['signal_prev'] && $macdData['macd_now'] < $macdData['signal_now']) {
-                $setups[] = $this->buildAnalysisSetup('MACD Crossover', 'SELL (short)', $closeNow, $atr, 1.5, 2.0, 'MACD line crossed below signal line today');
-            }
-        }
-        $indicatorDetails['macd'] = [
-            'status' => $macdStatus, 
-            'detail' => $macdDetail, 
-            'macd' => round($macdData['macd_now'] ?? 0, 2), 
-            'signal' => round($macdData['signal_now'] ?? 0, 2)
-        ];
-
-        // 5. Volume Surge / Breakout Check
-        $volStatus = 'Normal';
-        $volDetail = 'Volume is in normal average range';
-        $isVolSurge = $latest['volume'] >= ($avgVolume * 1.5);
-        if ($isVolSurge) {
-            $volStatus = 'Volume Surge';
-            $volDetail = 'Trading volume is ' . round($latest['volume'] / $avgVolume, 1) . 'x above average';
-            if ($closeNow > $closePrev) {
-                $bullishCount++;
-            } else {
-                $bearishCount++;
-            }
-            if ($latest['volume'] >= ($avgVolume * 2.5)) {
-                $type = $closeNow > $closePrev ? 'BUY' : 'SELL (short)';
-                $reason = $closeNow > $closePrev ? 'Price closed positive with massive volume breakout' : 'Price closed negative with massive volume breakdown';
-                $setups[] = $this->buildAnalysisSetup('Volume Breakout', $type, $closeNow, $atr, 1.5, 2.0, $reason);
-            }
-        }
-        $indicatorDetails['volume'] = ['status' => $volStatus, 'detail' => $volDetail, 'current' => $latest['volume'], 'avg' => round($avgVolume, 0)];
-
-        // Compute technical bias
-        $bias = 'NEUTRAL';
-        if ($bullishCount >= 3) $bias = 'BULLISH';
-        if ($bearishCount >= 3) $bias = 'BEARISH';
+        $health = $screener->technicalHealth($candles);
+        $indicatorDetails = $health['indicators'];
+        $bullishCount = $health['bullish'];
+        $bearishCount = $health['bearish'];
+        $bias = $health['bias'];
 
         // Query Yahoo Finance Search for news
         $newsList = [];
@@ -466,19 +333,4 @@ class ScreenerController extends Controller
         ]);
     }
 
-    protected function buildAnalysisSetup(string $strategy, string $signal, float $entry, float $atr, float $slMultiplier, float $rrRatio, string $reason): array
-    {
-        $riskDistance = $atr * $slMultiplier;
-        $stopLoss = str_contains($signal, 'BUY') ? round($entry - $riskDistance, 2) : round($entry + $riskDistance, 2);
-        $target = str_contains($signal, 'BUY') ? round($entry + ($riskDistance * $rrRatio), 2) : round($entry - ($riskDistance * $rrRatio), 2);
-
-        return [
-            'strategy' => $strategy,
-            'signal' => $signal,
-            'entry' => round($entry, 2),
-            'stop_loss' => $stopLoss,
-            'target' => $target,
-            'reason' => $reason,
-        ];
-    }
 }

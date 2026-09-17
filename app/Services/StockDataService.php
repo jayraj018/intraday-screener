@@ -28,7 +28,95 @@ class StockDataService
      */
     public function getDailyCandles(string $symbol, string $range = '3mo'): ?array
     {
-        $yahooSymbol = strtoupper($symbol) . '.NS';
+        $result = $this->fetch($symbol, $range, '1d');
+
+        if (! $result) {
+            return null;
+        }
+
+        $timestamps = $result['timestamp'] ?? [];
+        $quote = $result['indicators']['quote'][0] ?? [];
+        $adjClose = $result['indicators']['adjclose'][0]['adjclose'] ?? [];
+
+        $candles = [];
+
+        foreach ($timestamps as $i => $ts) {
+                if (! isset($quote['close'][$i]) || $quote['close'][$i] === null) {
+                    continue; // skip incomplete/holiday entries
+                }
+
+                // Yahoo fills NSE market holidays with a placeholder bar: the previous
+                // close repeated as open/high/low/close, and zero volume. About 1.2% of
+                // daily bars. They are not trading days, and leaving them in drags the
+                // 20-day average volume down (making volume surges easier to trigger) and
+                // ATR down (making stops tighter), on top of letting the backtest "trade"
+                // a day the market was shut.
+                if (($quote['volume'][$i] ?? 0) == 0) {
+                    continue;
+                }
+
+            $candles[] = [
+                'date' => gmdate('Y-m-d', $ts),
+                'open' => $quote['open'][$i],
+                'high' => $quote['high'][$i],
+                'low' => $quote['low'][$i],
+                'close' => $quote['close'][$i],
+                'adj_close' => $adjClose[$i] ?? null,
+                'volume' => $quote['volume'][$i],
+            ];
+        }
+
+        return $candles;
+    }
+
+    /**
+     * Weekly candles, for the broader trend context a swing setup is judged against.
+     * Same shape and same cleaning as the daily ones.
+     */
+    public function getWeeklyCandles(string $symbol, string $range = '2y'): ?array
+    {
+        $result = $this->fetch($symbol, $range, '1wk');
+
+        if (! $result) {
+            return null;
+        }
+
+        $timestamps = $result['timestamp'] ?? [];
+        $quote = $result['indicators']['quote'][0] ?? [];
+        $adjClose = $result['indicators']['adjclose'][0]['adjclose'] ?? [];
+
+        $candles = [];
+
+        foreach ($timestamps as $i => $ts) {
+            if (! isset($quote['close'][$i]) || $quote['close'][$i] === null || ($quote['volume'][$i] ?? 0) == 0) {
+                continue;
+            }
+
+            $candles[] = [
+                'date' => gmdate('Y-m-d', $ts),
+                'open' => $quote['open'][$i],
+                'high' => $quote['high'][$i],
+                'low' => $quote['low'][$i],
+                'close' => $quote['close'][$i],
+                'adj_close' => $adjClose[$i] ?? null,
+                'volume' => $quote['volume'][$i],
+            ];
+        }
+
+        return $candles;
+    }
+
+    /**
+     * One request to the provider, returning the raw chart result or null.
+     *
+     * A symbol beginning with "^" is an index (^NSEI is NIFTY 50) and takes no exchange
+     * suffix — appending ".NS" to it returns a 404, which is why the benchmark could not
+     * be fetched at all before.
+     */
+    protected function fetch(string $symbol, string $range, string $interval): ?array
+    {
+        $symbol = strtoupper($symbol);
+        $yahooSymbol = str_starts_with($symbol, '^') ? $symbol : $symbol . '.NS';
         $this->lastError = null;
 
         try {
@@ -37,9 +125,9 @@ class StockDataService
             // single unlucky request doesn't silently drop a stock from the scan.
             $response = Http::withHeaders([
                 'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            ])->timeout(10)->retry(3, 300, throw: false)->get($this->baseUrl . $yahooSymbol, [
+            ])->timeout(10)->retry(3, 300, throw: false)->get($this->baseUrl . rawurlencode($yahooSymbol), [
                 'range' => $range,
-                'interval' => '1d',
+                'interval' => $interval,
             ]);
 
             if ($response->status() === 404) {
@@ -65,27 +153,7 @@ class StockDataService
                 return null;
             }
 
-            $timestamps = $result['timestamp'] ?? [];
-            $quote = $result['indicators']['quote'][0] ?? [];
-
-            $candles = [];
-
-            foreach ($timestamps as $i => $ts) {
-                if (! isset($quote['close'][$i]) || $quote['close'][$i] === null) {
-                    continue; // skip incomplete/holiday entries
-                }
-
-                $candles[] = [
-                    'date' => date('Y-m-d', $ts),
-                    'open' => $quote['open'][$i],
-                    'high' => $quote['high'][$i],
-                    'low' => $quote['low'][$i],
-                    'close' => $quote['close'][$i],
-                    'volume' => $quote['volume'][$i],
-                ];
-            }
-
-            return $candles;
+            return $result;
         } catch (\Throwable $e) {
             $this->lastError = 'network';
             Log::error("StockDataService: exception fetching {$symbol} — " . $e->getMessage());
@@ -100,25 +168,13 @@ class StockDataService
      */
     public function getIntradayCandles(string $symbol, string $range = '1d'): ?array
     {
-        $yahooSymbol = strtoupper($symbol) . '.NS';
+        $result = $this->fetch($symbol, $range, '5m');
 
-        try {
-            $response = Http::withHeaders([
-                'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            ])->timeout(10)->retry(3, 300, throw: false)->get($this->baseUrl . $yahooSymbol, [
-                'range' => $range,
-                'interval' => '5m',
-            ]);
+        if (! $result) {
+            return null;
+        }
 
-            if (! $response->successful()) {
-                return null;
-            }
-
-            $result = $response->json('chart.result.0');
-            if (! $result) {
-                return null;
-            }
-
+        {
             $timestamps = $result['timestamp'] ?? [];
             $quote = $result['indicators']['quote'][0] ?? [];
 
@@ -148,9 +204,6 @@ class StockDataService
             }
 
             return $candles;
-        } catch (\Throwable $e) {
-            Log::error("StockDataService: exception fetching intraday {$symbol} — " . $e->getMessage());
-            return null;
         }
     }
 }

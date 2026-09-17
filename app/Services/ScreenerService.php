@@ -165,7 +165,7 @@ class ScreenerService
      * Values every daily-candle strategy shares, or null when the stock should be
      * skipped (not enough history, or too illiquid to trade).
      */
-    public function dailyContext(array $candles): ?array
+    public function dailyContext(array $candles, bool $requireLiquidity = true): ?array
     {
         // Need enough history for EMA 26 + Signal 9 = ~35 days minimum, let's require at least 50 candles
         if (count($candles) < 50) {
@@ -180,7 +180,11 @@ class ScreenerService
             return null;
         }
 
-        if ($avgVolume < config('screener.min_avg_volume')) {
+        // The liquidity floor decides which stocks are worth *scanning*; it is not part of
+        // any strategy rule. Someone who searches a specific stock has already chosen it,
+        // so the search page asks for the same context without this filter — the setups
+        // that come out are identical either way.
+        if ($requireLiquidity && $avgVolume < config('screener.min_avg_volume')) {
             return null; // skip illiquid stocks
         }
 
@@ -289,6 +293,136 @@ class ScreenerService
         }
 
         return $results;
+    }
+
+    /**
+     * A read of where each indicator stands right now, for the search page's technical
+     * breakdown — plus an overall bias from how many lean each way.
+     *
+     * This is a different question from dailySetups(). A setup fires on an *event*: the
+     * moment a line crosses another. This reports a *state*: which side of the line price
+     * is on today. A stock can be solidly bullish on every indicator and produce no setup
+     * at all, because nothing crossed.
+     *
+     * It lives here, beside the strategies, so both read the same periods from the same
+     * config. They used to be computed in the controller with 9 and 21 hardcoded, which
+     * meant changing config/screener.php moved the screener and left this panel behind.
+     */
+    public function technicalHealth(array $candles): ?array
+    {
+        if (count($candles) < 50) {
+            return null;
+        }
+
+        $closes = array_column($candles, 'close');
+        $closesPrev = array_slice($closes, 0, -1);
+        $latest = end($candles);
+        $closeNow = $latest['close'];
+        $closePrev = $candles[count($candles) - 2]['close'];
+
+        $bullish = 0;
+        $bearish = 0;
+        $indicators = [];
+
+        // 1. Moving averages — which side of the trend price is on
+        $shortMa = $this->indicators->sma($closes, $short = config('screener.short_ma'));
+        $longMa = $this->indicators->sma($closes, $long = config('screener.long_ma'));
+        $maUp = $shortMa && $longMa && $shortMa > $longMa;
+
+        $maUp ? $bullish++ : ($shortMa && $longMa ? $bearish++ : null);
+
+        $indicators['ma'] = [
+            'status' => $shortMa && $longMa ? ($maUp ? 'Bullish' : 'Bearish') : 'Neutral',
+            'detail' => $shortMa && $longMa
+                ? "{$short} SMA is trending " . ($maUp ? 'above' : 'below') . " {$long} SMA"
+                : 'Not enough history for the moving averages',
+            'short_val' => round((float) $shortMa, 2),
+            'long_val' => round((float) $longMa, 2),
+        ];
+
+        // 2. RSI — an extreme is a reversal watch, not a signal on its own
+        $rsi = $this->indicators->rsi($closes);
+        $rsiPrev = $this->indicators->rsi($closesPrev);
+
+        $indicators['rsi'] = match (true) {
+            $rsi === null => ['status' => 'Neutral', 'detail' => 'Not enough history for RSI', 'value' => 0.0],
+            $rsi < 30 => ['status' => 'Oversold / Reversal Watch', 'detail' => 'RSI is deeply oversold (< 30). Watch for a pullback', 'value' => round($rsi, 2)],
+            $rsi > 70 => ['status' => 'Overbought / Reversal Watch', 'detail' => 'RSI is overbought (> 70). Risk of a correction', 'value' => round($rsi, 2)],
+            default => ['status' => 'Neutral', 'detail' => 'RSI is neutral and ' . ($rsiPrev !== null && $rsi > $rsiPrev ? 'rising' : 'falling'), 'value' => round($rsi, 2)],
+        };
+
+        if ($rsi !== null && $rsi < 30) {
+            $bullish++; // oversold reads as a bullish reversal watch
+        } elseif ($rsi !== null && $rsi > 70) {
+            $bearish++;
+        }
+
+        // 3. Bollinger Bands — inside the bands is ordinary, outside is not
+        $bands = $this->indicators->bollingerBands($closes);
+        $aboveBand = $bands && $closeNow > $bands['upper'];
+        $belowBand = $bands && $closeNow < $bands['lower'];
+
+        $aboveBand and $bullish++;
+        $belowBand and $bearish++;
+
+        $indicators['bb'] = [
+            'status' => match (true) {
+                $aboveBand => 'Bullish Breakout',
+                $belowBand => 'Bearish Breakdown',
+                default => 'Neutral',
+            },
+            'detail' => match (true) {
+                $aboveBand => 'Price closed outside the Upper Bollinger Band',
+                $belowBand => 'Price closed outside the Lower Bollinger Band',
+                default => 'Price is inside standard volatility bands',
+            },
+            'upper' => round((float) ($bands['upper'] ?? 0), 2),
+            'middle' => round((float) ($bands['middle'] ?? 0), 2),
+            'lower' => round((float) ($bands['lower'] ?? 0), 2),
+        ];
+
+        // 4. MACD — momentum relative to its own signal line
+        $macd = $this->indicators->macd($closes);
+        $macdUp = $macd && $macd['macd_now'] > $macd['signal_now'];
+
+        $macd ? ($macdUp ? $bullish++ : $bearish++) : null;
+
+        $indicators['macd'] = [
+            'status' => $macd ? ($macdUp ? 'Bullish' : 'Bearish') : 'Neutral',
+            'detail' => $macd
+                ? 'MACD line is ' . ($macdUp ? 'above' : 'below') . ' the signal line'
+                : 'Not enough history for MACD',
+            'macd' => round($macd['macd_now'] ?? 0, 2),
+            'signal' => round($macd['signal_now'] ?? 0, 2),
+        ];
+
+        // 5. Volume — is the move being backed?
+        $avgVolume = $this->indicators->averageVolume($candles);
+        $surge = $avgVolume && $latest['volume'] >= $avgVolume * config('screener.volume_surge_multiplier');
+
+        if ($surge) {
+            $closeNow > $closePrev ? $bullish++ : $bearish++;
+        }
+
+        $indicators['volume'] = [
+            'status' => $surge ? 'Volume Surge' : 'Normal',
+            'detail' => $surge
+                ? 'Trading volume is ' . round($latest['volume'] / $avgVolume, 1) . 'x above average'
+                : 'Volume is in the normal average range',
+            'current' => $latest['volume'],
+            'avg' => round((float) $avgVolume),
+        ];
+
+        return [
+            'indicators' => $indicators,
+            'bullish' => $bullish,
+            'bearish' => $bearish,
+            'bias' => match (true) {
+                $bullish >= 3 => 'BULLISH',
+                $bearish >= 3 => 'BEARISH',
+                default => 'NEUTRAL',
+            },
+        ];
     }
 
     protected function buildSetup(

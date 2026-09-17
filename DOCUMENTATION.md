@@ -858,10 +858,10 @@ Listed honestly, in priority order. None of these are hidden by the UI.
 | # | Limitation | Impact |
 | - | ---------- | ------ |
 | 1 | **Survivorship bias** — the universe is today's index membership replayed over 2 years. Delisted and demoted stocks are missing | Results biased upward |
-| 2 | **No out-of-sample split** — the whole period is replayed at once. No walk-forward validation | Results are in-sample only |
-| 3 | **Corporate actions unverified** — the code never reads `adjclose` or `events`. Whether the price feed is split-adjusted has not been tested | A split could fire phantom signals |
+| 2 | **No out-of-sample split** — for the *intraday* backtest. A walk-forward harness now exists (`WalkForwardService`, 15 folds over 5 years) but nothing is wired to it yet | Intraday results remain in-sample only |
+| 3 | **Dividends not adjusted** — splits *are* handled (verified, see below); `quote` prices are not dividend-adjusted | Minor: a large special dividend gaps the price on its ex-date |
 | 4 | **No candle storage** — every scan and backtest re-downloads from Yahoo | Slow, and results are not reproducible between runs |
-| 5 | **Strategy logic exists in two places** — `ScreenerService::dailySetups()` and parts of `ScreenerController::analyze()` | The two can drift apart |
+| 5 | ~~Strategy logic in two places~~ — **fixed 17 Sep 2026.** `analyze()` now calls `ScreenerService`; a test asserts both paths produce identical setups | — |
 | 6 | **ATR is a simple average of True Range**, not Wilder's smoothing |
 
 
@@ -880,11 +880,42 @@ Listed honestly, in priority order. None of these are hidden by the UI.
 | 7 | **Unofficial data provider** — Yahoo's endpoint has no SLA and can rate-limit or change without notice | Scans can silently drop stocks |
 | 8 | **No sector data** | Sector confirmation is unavailable, not false |
 
-### How to verify #3 yourself
+### Split adjustment — verified 17 Sep 2026
 
-Pick an NSE stock with a known split in the last two years, fetch it, and inspect the bar
-around the ex-date. If it shows an unadjusted cliff, every split in the window fires a
-phantom High Momentum signal.
+Yahoo's `events=split` endpoint reported nine real NSE splits in the last three years. The
+bars around three of them were inspected:
+
+| Stock | Split | Ex-date | Move on ex-date |
+| ----- | ----- | ------- | --------------- |
+| KOTAKBANK | 5:1 | 2026-01-14 | −1.3% |
+| RELIANCE | 2:1 | 2024-10-28 | +0.5% |
+| NESTLEIND | 2:1 | 2025-08-08 | −1.9% |
+
+An unadjusted feed would show −80% and −50% cliffs. It doesn't, and volume shows no
+matching jump either. **Prices and volume are both split-adjusted retroactively**, so no
+phantom signals are being fired by splits.
+
+`adjclose` differs from `close` by well under 1% — that is the dividend adjustment. The
+app uses `quote` (actual traded prices), which is the right choice for a price-action
+backtest: a dividend gap is a real price move a trader would have experienced.
+
+### Market-holiday placeholder bars — found and fixed 17 Sep 2026
+
+The same check turned up a different problem. Yahoo fills NSE market holidays with a
+placeholder bar: the previous close repeated as open/high/low/close, and **zero volume**.
+Across 5,010 daily bars in 10 stocks, 59 were placeholders (1.18%), clustering on the same
+dates across every stock — the signature of a market holiday.
+
+They were being read as real trading days. Dropping them changes the numbers measurably:
+
+```
+RELIANCE, 6 months of daily bars
+  ATR(14):        21.09  ->  21.93   (+4.00%)
+  avg volume 20:  10.40M ->  10.68M  (+2.67%)
+```
+
+Both were biased **downward** — tighter stops than intended, and a lower volume bar that
+made surges easier to trigger. `StockDataService` now skips daily bars with zero volume.
 
 ---
 

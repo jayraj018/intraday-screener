@@ -121,7 +121,8 @@ return [
         // a discount broker's published rates — check them against your own contract note.
         'brokerage_percent' => 0.03,
         'brokerage_cap' => 20,       // ₹ per executed order, whichever is lower
-        'stt_sell_percent' => 0.025, // sell leg only for intraday
+        'stt_buy_percent' => 0.0,    // intraday pays STT on the sell leg only
+        'stt_sell_percent' => 0.025,
         'exchange_txn_percent' => 0.00297,
         'sebi_percent' => 0.0001,
         'stamp_duty_buy_percent' => 0.003,
