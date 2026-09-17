@@ -3,11 +3,15 @@
 namespace App\Console\Commands;
 
 use App\Console\Concerns\ReportsRunStatus;
+use App\Models\BacktestRun;
+use App\Models\BacktestTrade;
 use App\Models\StrategyStat;
+use App\Services\BacktestMetricsService;
 use App\Services\BacktestService;
 use App\Services\ScreenerService;
 use Illuminate\Console\Command;
 use Illuminate\Contracts\Console\Isolatable;
+use Illuminate\Support\Facades\DB;
 
 class RunBacktest extends Command implements Isolatable
 {
@@ -15,58 +19,125 @@ class RunBacktest extends Command implements Isolatable
 
     public const STATUS_CACHE_KEY = 'backtest.status';
 
+    /** Rows per insert. Large enough to be fast, small enough not to build a huge query. */
+    protected const INSERT_CHUNK = 500;
+
     protected $signature = 'screener:backtest';
 
-    protected $description = 'Replay each strategy on past data, save its same-day win rate, and decide which count towards Top Picks';
+    protected $description = 'Replay each strategy on past data, record every trade with its costs, and report what each strategy actually returned';
 
-    public function handle(BacktestService $backtest, ScreenerService $screener): int
+    public function handle(BacktestService $backtest, ScreenerService $screener, BacktestMetricsService $metrics): int
     {
-        return $this->withRunStatus(fn () => $this->runBacktest($backtest, $screener));
+        return $this->withRunStatus(fn () => $this->runBacktest($backtest, $screener, $metrics));
     }
 
-    protected function runBacktest(BacktestService $backtest, ScreenerService $screener): int
+    protected function runBacktest(BacktestService $backtest, ScreenerService $screener, BacktestMetricsService $metrics): int
     {
         $symbols = $screener->watchlist();
 
-        $this->info('Backtesting strategies on ' . count($symbols) . ' stocks (trades closed the same day)...');
+        $run = BacktestRun::create([
+            'system' => 'intraday',
+            'range' => config('screener.backtest_range'),
+            'symbols' => count($symbols),
+            // Stored so a result can be reproduced, and compared against a later run that
+            // changed one of these rather than the code
+            'settings' => [
+                'execution' => config('screener.execution'),
+                'costs' => config('screener.costs'),
+                'risk_reward_ratio' => config('screener.risk_reward_ratio'),
+                'stop_loss_atr_multiplier' => config('screener.stop_loss_atr_multiplier'),
+                'min_avg_volume' => config('screener.min_avg_volume'),
+            ],
+            'started_at' => now(),
+        ]);
+
+        $this->info('Backtesting on ' . count($symbols) . ' stocks (run #' . $run->id . ', entry model: ' . config('screener.execution.entry') . ')...');
 
         $bar = $this->output->createProgressBar(count($symbols));
         $bar->start();
 
         $done = 0;
-        $tally = $backtest->run($symbols, function () use ($bar, &$done, $symbols) {
-            $bar->advance();
-            $this->recordProgress(++$done, count($symbols));
-        });
+        $stored = 0;
+
+        $backtest->run(
+            $symbols,
+            function (array $trades) use ($run, &$stored) {
+                $stored += $this->storeTrades($run->id, $trades);
+            },
+            function () use ($bar, &$done, $symbols) {
+                $bar->advance();
+                $this->recordProgress(++$done, count($symbols));
+            }
+        );
 
         $bar->finish();
         $this->newLine(2);
 
-        if (! $tally) {
-            $this->error('No data could be fetched, so nothing was saved. Try again in a moment.');
+        if ($stored === 0) {
+            $this->error('No trades were produced, so nothing was saved. Check the data provider and try again.');
+            $run->delete();
 
             return self::FAILURE;
         }
 
-        // Replace the previous backtest entirely so a strategy that no longer trades doesn't keep an old win rate
-        StrategyStat::query()->delete();
+        $run->update(['finished_at' => now()]);
+        $this->info(number_format($stored) . ' trades recorded.');
 
-        $stats = collect($tally)
-            ->map(fn ($t, $strategy) => StrategyStat::create([
-                'strategy' => $strategy,
-                'trades' => $t['trades'],
-                'wins' => $t['wins'],
-                'win_rate' => round($t['wins'] / $t['trades'] * 100, 2),
-            ]))
-            ->sortByDesc('win_rate');
+        $this->saveStats($run->id, $metrics->forRun($run->id));
+        $this->report($run->id, $metrics);
+
+        return self::SUCCESS;
+    }
+
+    protected function storeTrades(int $runId, array $trades): int
+    {
+        $rows = array_map(fn ($trade) => [
+            ...$trade,
+            'run_id' => $runId,
+            'system' => 'intraday',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ], $trades);
+
+        foreach (array_chunk($rows, self::INSERT_CHUNK) as $chunk) {
+            BacktestTrade::insert($chunk);
+        }
+
+        return count($rows);
+    }
+
+    /**
+     * Replace the dashboard's stats in one transaction. Previously a crash between the
+     * delete and the inserts left the dashboard reading half a backtest as if it were
+     * the whole one.
+     */
+    protected function saveStats(int $runId, array $metrics): void
+    {
+        DB::transaction(function () use ($runId, $metrics) {
+            StrategyStat::query()->delete();
+
+            foreach ($metrics as $strategy => $m) {
+                StrategyStat::create(['run_id' => $runId, 'strategy' => $strategy, ...$m]);
+            }
+        });
+    }
+
+    protected function report(int $runId, BacktestMetricsService $metrics): void
+    {
+        $stats = StrategyStat::all()->sortByDesc('expectancy_r');
 
         $this->table(
-            ['Strategy', 'Trades', 'Wins', 'Win rate', 'Counts in Top Picks'],
+            ['Strategy', 'Trades', 'Win %', 'Avg win', 'Avg loss', 'Profit factor', 'Expectancy', 'Max DD', 'Net P&L', 'Top Picks'],
             $stats->map(fn (StrategyStat $s) => [
                 $s->strategy,
                 $s->trades,
-                $s->wins,
                 $s->win_rate . '%',
+                $this->r($s->avg_win_r),
+                $this->r($s->avg_loss_r),
+                $s->profit_factor === null ? 'n/a' : number_format($s->profit_factor, 2),
+                $this->r($s->expectancy_r),
+                $this->r($s->max_drawdown_r),
+                '₹' . number_format((float) $s->net_pnl, 0),
                 match (true) {
                     $s->qualifies() => 'Yes',
                     $s->trades < config('screener.min_backtest_trades') => 'No (too few trades)',
@@ -75,8 +146,33 @@ class RunBacktest extends Command implements Isolatable
             ])
         );
 
-        $this->comment('Positive Earnings can\'t be backtested (no old news data), so it never counts towards Top Picks.');
+        $this->newLine();
+        $this->line('<comment>How trades ended</comment> — a strategy whose trades mostly reach "session_close" is being');
+        $this->line('measured on next-day drift rather than on its own stop and target.');
+        $this->newLine();
 
-        return self::SUCCESS;
+        $breakdown = $metrics->exitBreakdown($runId);
+        $reasons = ['stop', 'target', 'vwap_trail', 'session_close'];
+
+        $this->table(
+            ['Strategy', ...array_map(fn ($r) => str_replace('_', ' ', $r), $reasons)],
+            collect($breakdown)->map(function ($counts, $strategy) use ($reasons) {
+                $total = array_sum($counts) ?: 1;
+
+                return [$strategy, ...array_map(
+                    fn ($r) => isset($counts[$r]) ? $counts[$r] . ' (' . round($counts[$r] / $total * 100) . '%)' : '—',
+                    $reasons
+                )];
+            })->values()->all()
+        );
+
+        $this->newLine();
+        $this->comment('Expectancy and P&L are net of brokerage, STT, exchange, SEBI, stamp duty, GST and slippage.');
+        $this->comment('Positive Earnings can\'t be backtested (no old news data), so it never counts towards Top Picks.');
+    }
+
+    protected function r(?float $value): string
+    {
+        return $value === null ? 'n/a' : number_format($value, 2) . 'R';
     }
 }

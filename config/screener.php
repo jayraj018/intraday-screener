@@ -26,6 +26,10 @@ return [
         'HINDZINC',
     ],
 
+    // NSE regular session close, IST. Before this, the current day's daily candle is
+    // still forming and is excluded from every daily strategy.
+    'market_close' => '15:30',
+
     // Moving average crossover periods (in days, using daily candles)
     'short_ma' => 9,
     'long_ma' => 21,
@@ -60,6 +64,11 @@ return [
     // Only strategies with at least this backtested win rate (%) count towards Top Picks...
     'min_win_rate' => 45,
 
+    // ...and only if they actually made money after costs. Expectancy is the average R
+    // returned per trade, so 0 means "at least break even". This is the gate that stops a
+    // strategy with a flattering win rate and oversized losers from getting a vote.
+    'min_expectancy_r' => 0.0,
+
     // ...and only if the backtest produced at least this many trades, so a lucky handful doesn't qualify
     'min_backtest_trades' => 20,
 
@@ -83,6 +92,40 @@ return [
         // No new intraday entry after this time, and everything squared off by close
         'no_new_entry_after' => '15:00',
         'square_off_at' => '15:15',
+    ],
+
+    // How the backtest assumes a signal is filled.
+    //
+    //   next_open    - enter at the next session's open. A signal found at a day's close
+    //                  can't be bought at that close, so this is the realistic model.
+    //   signal_close - enter at the closing price that produced the signal. This is what
+    //                  the backtest used to do; it is kept only so the difference between
+    //                  the two can be measured rather than argued about.
+    'execution' => [
+        'entry' => env('BACKTEST_EXECUTION', 'next_open'),
+
+        // Applied against you on both legs, in basis points (5 = 0.05%)
+        'slippage_bps' => 5,
+    ],
+
+    // Turning a per-share move into money, so costs can be charged realistically and
+    // a ₹0.01 gain stops counting as a win.
+    'costs' => [
+        // Position sizing. Quantity is risk-based: risk budget / distance to the stop,
+        // capped so one position can't exceed max_position_value.
+        'capital' => 100000,
+        'risk_per_trade_percent' => 1.0,
+        'max_position_value' => 100000,
+
+        // Indian intraday equity (MIS) charges, as percentages of turnover. These follow
+        // a discount broker's published rates — check them against your own contract note.
+        'brokerage_percent' => 0.03,
+        'brokerage_cap' => 20,       // ₹ per executed order, whichever is lower
+        'stt_sell_percent' => 0.025, // sell leg only for intraday
+        'exchange_txn_percent' => 0.00297,
+        'sebi_percent' => 0.0001,
+        'stamp_duty_buy_percent' => 0.003,
+        'gst_percent' => 18,         // on brokerage + exchange + SEBI
     ],
 
     // Secret required to start a backtest from the web (/api/run-backtest?token=...).

@@ -37,13 +37,14 @@ class ScreenerController extends Controller
 
         $minAgree = config('screener.min_strategies_agree');
         $minWinRate = config('screener.min_win_rate');
+        $minExpectancy = config('screener.min_expectancy_r');
         $strategyStats = StrategyStat::all()->keyBy('strategy');
         $qualifiedStrategies = $strategyStats->filter->qualifies()->sortByDesc('win_rate');
 
         // Only strategies that proved themselves in the backtest get a vote
         $topPicks = $this->buildTopPicks($results->whereIn('strategy', $qualifiedStrategies->keys()), $minAgree);
 
-        return view('screener.index', compact('results', 'lastScanAt', 'eventBoard', 'topPicks', 'minAgree', 'minWinRate', 'strategyStats', 'qualifiedStrategies'));
+        return view('screener.index', compact('results', 'lastScanAt', 'eventBoard', 'topPicks', 'minAgree', 'minWinRate', 'minExpectancy', 'strategyStats', 'qualifiedStrategies'));
     }
 
     /**
@@ -185,7 +186,14 @@ class ScreenerController extends Controller
         }
 
         $yahooSymbol = $symbol . '.NS';
-        $candles = $dataService->getDailyCandles($symbol);
+        $allCandles = $dataService->getDailyCandles($symbol);
+
+        // Today's candle is still forming during the session: its "close" is the live
+        // price and its volume is only what has traded so far. Reading it as finished
+        // made every setup's entry change on each refresh, so the indicators below run on
+        // completed candles only — while the live price is kept for display.
+        $candles = $allCandles ? $screener->completedDailyCandles($allCandles) : $allCandles;
+        $sessionRunning = $allCandles && count($candles) < count($allCandles);
 
         if (!$candles) {
             // Distinguish a genuinely unknown ticker from a transient upstream failure —
@@ -205,6 +213,11 @@ class ScreenerController extends Controller
         $latest = end($candles);
         $closeNow = $latest['close'];
         $closePrev = $candles[count($candles) - 2]['close'];
+
+        // Mid-session the price on screen is today's live price, measured against the last
+        // completed close. After the close both come from finished candles instead.
+        $livePrice = $sessionRunning ? end($allCandles)['close'] : $closeNow;
+        $referenceClose = $sessionRunning ? $closeNow : $closePrev;
 
         $avgVolume = $indicators->averageVolume($candles);
         $atr = $indicators->atr($candles, 14);
@@ -430,8 +443,14 @@ class ScreenerController extends Controller
 
         return response()->json([
             'symbol' => $symbol,
-            'current_price' => round($closeNow, 2),
-            'change_percent' => round((($closeNow - $closePrev) / $closePrev) * 100, 2),
+            'current_price' => round($livePrice, 2),
+            'change_percent' => round(($livePrice - $referenceClose) / $referenceClose * 100, 2),
+
+            // The close every indicator below was computed from. During the session this
+            // is yesterday's, which is why a setup's entry won't match the live price.
+            'signal_close' => round($closeNow, 2),
+            'signal_close_date' => $latest['date'],
+            'session_running' => $sessionRunning,
             'bias' => $bias,
             'bullish_indicators' => $bullishCount,
             'bearish_indicators' => $bearishCount,

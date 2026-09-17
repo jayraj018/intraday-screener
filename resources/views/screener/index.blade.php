@@ -1363,20 +1363,29 @@
     <div class="table-card top-picks-card">
         <div class="top-picks-header">
             <h3>⭐ Top Picks</h3>
-            <span>Stocks where {{ $minAgree }} or more strategies with a {{ $minWinRate }}%+ backtested win rate give the same signal today</span>
+            <span>Stocks where {{ $minAgree }} or more strategies give the same signal today — counting only strategies that made money after costs in the last backtest</span>
         </div>
         @if($qualifiedStrategies->isNotEmpty())
             <div class="top-picks-qualified">
                 Counted:
                 @foreach($qualifiedStrategies as $stat)
-                    <span class="strategy-badge {{ $strategyBadgeClasses[$stat->strategy] ?? 'strat-ma' }}">{{ $stat->strategy }} · {{ round($stat->win_rate) }}%</span>
+                    <span class="strategy-badge {{ $strategyBadgeClasses[$stat->strategy] ?? 'strat-ma' }}">{{ $stat->strategy }} · {{ round($stat->win_rate) }}%{{ $stat->expectancy_r === null ? '' : ' · ' . number_format($stat->expectancy_r, 2) . 'R' }}</span>
                 @endforeach
             </div>
         @endif
         @if($strategyStats->isEmpty())
-            <div class="top-picks-empty">Win rates haven't been measured yet. Run <code>php artisan screener:backtest</code> first.</div>
+            <div class="top-picks-empty">Nothing has been measured yet. Run <code>php artisan screener:backtest</code> first.</div>
         @elseif($qualifiedStrategies->isEmpty())
-            <div class="top-picks-empty">No strategy reached a {{ $minWinRate }}% win rate in the last backtest, so there are no Top Picks.</div>
+            {{-- A strategy can clear the win-rate bar and still be rejected here for losing
+                 more on its losers than it makes on its winners, so say which gate it failed. --}}
+            <div class="top-picks-empty">
+                No strategy qualified in the last backtest, so there are no Top Picks.
+                A strategy needs at least {{ $minWinRate }}% wins, {{ config('screener.min_backtest_trades') }} trades, and an expectancy above {{ number_format($minExpectancy, 2) }}R after costs.
+                @php($profitable = $strategyStats->filter(fn ($s) => $s->expectancy_r !== null && $s->expectancy_r >= $minExpectancy))
+                @if($strategyStats->contains(fn ($s) => $s->expectancy_r !== null) && $profitable->isEmpty())
+                    <br><strong>Every strategy lost money after costs in that run</strong> — the numbers are in the backtest output, and this panel stays empty until that changes.
+                @endif
+            </div>
         @elseif($topPicks->isEmpty())
             <div class="top-picks-empty">No stock has {{ $minAgree }} or more of these strategies agreeing today.</div>
         @else
@@ -1698,10 +1707,21 @@
 
                 // Setups Triggered
                 const setupList = document.getElementById('analysisSetupList');
+
+                // These strategies read completed daily candles, so during the session the
+                // signal comes from yesterday's close and is traded at the next open —
+                // never at the live price at the top of the panel.
+                const setupNote = `<p style="font-size:11px; color:var(--text-secondary); line-height:1.6; margin-bottom:12px;">
+                    Based on the close of <strong>${data.signal_close_date}</strong> (₹${data.signal_close.toFixed(2)}).
+                    ${data.session_running
+                        ? 'Today\'s candle is still forming and is excluded, so these are yesterday\'s signals — the entry is the next session\'s open, not the price above.'
+                        : 'The entry is the next session\'s open, not the price above.'}
+                </p>`;
+
                 if (data.setups.length === 0) {
-                    setupList.innerHTML = '<div style="color: var(--text-secondary); font-size: 13px;">No direct strategies triggered for this stock today.</div>';
+                    setupList.innerHTML = setupNote + '<div style="color: var(--text-secondary); font-size: 13px;">No direct strategies triggered on that close.</div>';
                 } else {
-                    setupList.innerHTML = data.setups.map(s => {
+                    setupList.innerHTML = setupNote + data.setups.map(s => {
                         const isBuy = s.signal.includes('BUY');
                         return `
                             <div class="analysis-setup-card ${isBuy ? 'buy' : 'sell'}">

@@ -57,7 +57,7 @@ class ScreenerService
                 $onEachSymbol($symbol);
             }
 
-            $candles = $this->dataService->getDailyCandles($symbol);
+            $candles = $this->completedDailyCandles($this->dataService->getDailyCandles($symbol) ?? []);
             $ctx = $candles ? $this->dailyContext($candles) : null;
 
             if (! $ctx) {
@@ -324,6 +324,35 @@ class ScreenerService
             'confidence' => $volumeSurge ? 'higher' : 'moderate',
             'reason' => $details . ($volumeSurge ? ', confirmed by a volume surge' : ', no unusual volume yet'),
         ];
+    }
+
+    /**
+     * Daily candles with today's dropped while the session is still running.
+     *
+     * Yahoo returns a row for the current day from the opening bell, with the live price
+     * as its "close" and only the volume traded so far. Every daily strategy read that as
+     * a finished candle, so a setup's entry price changed on every refresh, a volume rule
+     * could cross its threshold mid-morning, and "price closed positive" was reported at
+     * 10:41. The backtest has always dropped this candle — this is the live scan catching
+     * up with it.
+     *
+     * After the close the candle is final and is kept, so an evening scan still produces
+     * today's signals for tomorrow.
+     */
+    public function completedDailyCandles(array $candles): array
+    {
+        if (! $candles) {
+            return [];
+        }
+
+        $now = now('Asia/Kolkata');
+        $isToday = end($candles)['date'] === $now->toDateString();
+
+        if ($isToday && $now->format('H:i') < config('screener.market_close')) {
+            array_pop($candles);
+        }
+
+        return $candles;
     }
 
     /**
