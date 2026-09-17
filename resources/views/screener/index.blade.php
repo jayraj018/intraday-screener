@@ -1441,6 +1441,97 @@
         @endif
     </div>
 
+    {{-- What the backtest actually measured. Win rate alone can't separate a strategy with
+         an edge from one without: at a 1:2 payoff, 34% wins is already break-even. --}}
+    @if($strategyStats->isNotEmpty())
+        <div class="top-picks-card" style="margin-bottom: 30px;">
+            <div class="top-picks-header" style="flex-wrap: wrap; gap: 8px;">
+                <span class="top-picks-title">📊 Backtest Results</span>
+                <span>
+                    @if($backtestRun)
+                        {{ $backtestRun->range }} of history · {{ number_format($backtestRun->symbols) }} stocks ·
+                        entry at {{ str_replace('_', ' ', $backtestRun->settings['execution']['entry'] ?? 'unknown') }} ·
+                        run #{{ $backtestRun->id }}{{ $backtestRun->finished_at ? ', ' . $backtestRun->finished_at->timezone('Asia/Kolkata')->format('d M Y H:i') : '' }}
+                    @else
+                        from an earlier run, before individual trades were recorded
+                    @endif
+                </span>
+            </div>
+
+            <div style="overflow-x: auto;">
+                <table class="card-table">
+                    <thead>
+                    <tr>
+                        <th>Strategy</th>
+                        <th>Trades</th>
+                        <th>Win rate</th>
+                        <th>Avg win</th>
+                        <th>Avg loss</th>
+                        <th>Profit factor</th>
+                        <th>Expectancy</th>
+                        <th>Max drawdown</th>
+                        <th>How trades ended</th>
+                        <th>Counts in Top Picks</th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    @foreach($strategyStats->sortByDesc('expectancy_r') as $stat)
+                        <tr>
+                            <td class="cell-block" data-label="Strategy">
+                                <span class="strategy-badge {{ $strategyBadgeClasses[$stat->strategy] ?? 'strat-ma' }}">{{ $stat->strategy }}</span>
+                            </td>
+                            <td data-label="Trades">{{ number_format($stat->trades) }}</td>
+                            <td data-label="Win rate">{{ number_format($stat->win_rate, 1) }}%</td>
+                            <td class="price-val" data-label="Avg win">{{ $stat->avg_win_r === null ? '—' : number_format($stat->avg_win_r, 2) . 'R' }}</td>
+                            <td class="price-val" data-label="Avg loss">{{ $stat->avg_loss_r === null ? '—' : number_format($stat->avg_loss_r, 2) . 'R' }}</td>
+                            {{-- Below 1.0 means the losers took more than the winners made --}}
+                            <td class="price-val" data-label="Profit factor" style="color: {{ $stat->profit_factor === null ? 'inherit' : ($stat->profit_factor >= 1 ? 'var(--accent-green)' : 'var(--accent-red)') }};">
+                                {{ $stat->profit_factor === null ? '—' : number_format($stat->profit_factor, 2) }}
+                            </td>
+                            <td class="price-val" data-label="Expectancy" style="color: {{ $stat->expectancy_r === null ? 'inherit' : ($stat->expectancy_r >= 0 ? 'var(--accent-green)' : 'var(--accent-red)') }};">
+                                {{ $stat->expectancy_r === null ? '—' : number_format($stat->expectancy_r, 3) . 'R' }}
+                            </td>
+                            <td class="price-val" data-label="Max drawdown">{{ $stat->max_drawdown_r === null ? '—' : number_format($stat->max_drawdown_r, 1) . 'R' }}</td>
+                            <td class="cell-block" data-label="How trades ended">
+                                @if($stat->exit_breakdown)
+                                    @php($total = max(1, array_sum($stat->exit_breakdown)))
+                                    <div class="strategy-list">
+                                        @foreach($stat->exit_breakdown as $reason => $count)
+                                            <span class="strategy-badge strat-ma">{{ str_replace('_', ' ', $reason) }} {{ round($count / $total * 100) }}%</span>
+                                        @endforeach
+                                    </div>
+                                @else
+                                    <span class="opposing-note">not recorded</span>
+                                @endif
+                            </td>
+                            <td data-label="Counts in Top Picks">
+                                @if($stat->qualifies())
+                                    <span style="color: var(--accent-green); font-weight: 700;">Yes</span>
+                                @elseif($stat->trades < config('screener.min_backtest_trades'))
+                                    <span class="opposing-note">No · too few trades</span>
+                                @elseif($stat->expectancy_r !== null && $stat->expectancy_r < $minExpectancy)
+                                    <span class="opposing-note">No · lost money after costs</span>
+                                @else
+                                    <span class="opposing-note">No · win rate below {{ $minWinRate }}%</span>
+                                @endif
+                            </td>
+                        </tr>
+                    @endforeach
+                    </tbody>
+                </table>
+            </div>
+
+            <p style="margin-top: 16px; font-size: 11px; color: var(--text-secondary); line-height: 1.7;">
+                <strong>BACKTEST RESULT</strong> — a replay on past data, net of brokerage, STT, exchange and SEBI charges, stamp duty, GST and slippage.
+                Not a live or paper-traded result, and not a prediction.
+                Figures are in <strong>R</strong>, multiples of the amount risked per trade, so stocks at different prices can be averaged together.
+                <strong>Expectancy</strong> is the average R returned per trade: below zero means the strategy lost money over the period tested.
+                A strategy whose trades mostly end at <em>session close</em> rather than at its stop or target is being measured on next-day drift rather than on its own plan.
+                The whole period was replayed at once with no out-of-sample split, the universe is today's index membership replayed backwards (so delisted stocks are missing), and split/dividend adjustment in the price feed has not been verified.
+            </p>
+        </div>
+    @endif
+
     <!-- Layout Wrapper -->
     <div class="main-layout">
         <!-- Left Side: Table & Filters -->

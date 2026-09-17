@@ -83,8 +83,10 @@ class RunBacktest extends Command implements Isolatable
         $run->update(['finished_at' => now()]);
         $this->info(number_format($stored) . ' trades recorded.');
 
-        $this->saveStats($run->id, $metrics->forRun($run->id));
-        $this->report($run->id, $metrics);
+        $breakdown = $metrics->exitBreakdown($run->id);
+
+        $this->saveStats($run->id, $metrics->forRun($run->id), $breakdown);
+        $this->report($breakdown);
 
         return self::SUCCESS;
     }
@@ -111,18 +113,23 @@ class RunBacktest extends Command implements Isolatable
      * delete and the inserts left the dashboard reading half a backtest as if it were
      * the whole one.
      */
-    protected function saveStats(int $runId, array $metrics): void
+    protected function saveStats(int $runId, array $metrics, array $breakdown): void
     {
-        DB::transaction(function () use ($runId, $metrics) {
+        DB::transaction(function () use ($runId, $metrics, $breakdown) {
             StrategyStat::query()->delete();
 
             foreach ($metrics as $strategy => $m) {
-                StrategyStat::create(['run_id' => $runId, 'strategy' => $strategy, ...$m]);
+                StrategyStat::create([
+                    'run_id' => $runId,
+                    'strategy' => $strategy,
+                    'exit_breakdown' => $breakdown[$strategy] ?? null,
+                    ...$m,
+                ]);
             }
         });
     }
 
-    protected function report(int $runId, BacktestMetricsService $metrics): void
+    protected function report(array $breakdown): void
     {
         $stats = StrategyStat::all()->sortByDesc('expectancy_r');
 
@@ -151,7 +158,6 @@ class RunBacktest extends Command implements Isolatable
         $this->line('measured on next-day drift rather than on its own stop and target.');
         $this->newLine();
 
-        $breakdown = $metrics->exitBreakdown($runId);
         $reasons = ['stop', 'target', 'vwap_trail', 'session_close'];
 
         $this->table(

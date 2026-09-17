@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class StrategyStat extends Model
 {
@@ -23,6 +24,7 @@ class StrategyStat extends Model
         'max_consecutive_losses',
         'best_trade_r',
         'worst_trade_r',
+        'exit_breakdown',
     ];
 
     protected $casts = [
@@ -40,7 +42,13 @@ class StrategyStat extends Model
         'max_consecutive_losses' => 'integer',
         'best_trade_r' => 'float',
         'worst_trade_r' => 'float',
+        'exit_breakdown' => 'array',
     ];
+
+    public function run(): BelongsTo
+    {
+        return $this->belongsTo(BacktestRun::class, 'run_id');
+    }
 
     /**
      * Whether the backtest is good enough for this strategy to count towards Top Picks.
