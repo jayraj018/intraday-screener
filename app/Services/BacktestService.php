@@ -107,22 +107,34 @@ class BacktestService
         foreach ($days as $dayCandles) {
             $vwap = $this->indicators->vwap($dayCandles);
 
-            // Grow the day one candle at a time so the setup only sees candles that
-            // existed at that moment (it averages volume over the candles so far).
-            for ($k = 4; $k <= count($dayCandles); $k++) {
-                $setup = $this->screener->calculateOrbSetup(array_slice($dayCandles, 0, $k), array_slice($vwap, 0, $k));
+            // The detector judges each candle against only the candles before it, so
+            // handing it the whole session returns the same breakout the live scan finds
+            // — it no longer has to be fed one candle at a time to stay honest.
+            $setup = $this->screener->calculateOrbSetup($dayCandles, $vwap);
 
-                if ($setup) {
-                    $this->record($tally, 'ORB + VWAP Breakout', $this->orbOutcome($setup, array_slice($dayCandles, $k), array_slice($vwap, $k)));
-                    break;
-                }
+            if (! $setup) {
+                continue;
             }
+
+            // Entry is the open after the confirming candle, exactly as it is live
+            $entryIndex = $setup['breakout_index'] + 1;
+            $filled = $this->screener->fillOrbSetup($setup, $dayCandles[$entryIndex] ?? null);
+
+            if (! $filled) {
+                continue; // confirmed on the session's last candle — nothing left to enter on
+            }
+
+            $this->record($tally, 'ORB + VWAP Breakout', $this->orbOutcome(
+                $filled,
+                array_slice($dayCandles, $entryIndex),
+                array_slice($vwap, $entryIndex)
+            ));
         }
     }
 
     /**
-     * Walk the rest of the session after the breakout. Null when the breakout came on
-     * the day's last candle and there was no time left to trade it.
+     * Walk the session from the entry candle onwards. Null when there was no candle
+     * left to trade after the breakout was confirmed.
      */
     protected function orbOutcome(array $setup, array $rest, array $restVwap): ?bool
     {

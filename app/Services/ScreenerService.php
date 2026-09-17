@@ -132,8 +132,11 @@ class ScreenerService
             $intradayCandles = $this->dataService->getIntradayCandles($symbol);
             if ($intradayCandles && count($intradayCandles) >= 4) {
                 $vwapArray = $this->indicators->vwap($intradayCandles);
-                $orbSetup = $this->calculateOrbSetup($intradayCandles, $vwapArray);
-                if ($orbSetup) {
+                $orbSetup = $this->liveOrbSetup($intradayCandles, $vwapArray);
+
+                // A breakout confirmed on the newest candle has no entry price yet — it
+                // is taken at the next candle's open, so there is nothing to save.
+                if ($orbSetup && $orbSetup['entry'] !== null) {
                     $results[] = [
                         'symbol' => $symbol,
                         'strategy' => 'ORB + VWAP Breakout',
@@ -143,7 +146,7 @@ class ScreenerService
                         'target' => $orbSetup['target'],
                         'volume_surge' => $volumeSurge,
                         'confidence' => $volumeSurge ? 'higher' : 'moderate',
-                        'reason' => $orbSetup['reason'],
+                        'reason' => $orbSetup['reason'] . ' Entered at ₹' . number_format($orbSetup['entry'], 2) . ' on the ' . $orbSetup['entry_at'] . ' open.',
                     ];
                 }
             }
@@ -321,7 +324,16 @@ class ScreenerService
     }
 
     /**
-     * Compute ORB (Opening Range Breakout) + VWAP setups.
+     * The first opening-range breakout in the candles supplied, or null if there isn't
+     * one yet. Detection only — see fillOrbSetup() for the price the trade is taken at.
+     *
+     * Only the candles passed in are used, so replaying a session one candle at a time
+     * sees exactly what the live scan sees at that moment. That is why the volume
+     * threshold averages the candles *before* the one being tested instead of the whole
+     * array: averaging the whole session let a volume spike from later in the day veto
+     * an earlier, genuine breakout, so the live dashboard reported a breakout candle
+     * that could only have been picked with hindsight — and one the backtest, which
+     * only ever sees a prefix, would never have picked.
      */
     public function calculateOrbSetup(array $intradayCandles, array $vwapArray): ?array
     {
@@ -331,80 +343,203 @@ class ScreenerService
 
         $orbHigh = -INF;
         $orbLow = INF;
-        $openingCandlesCount = 0;
-
-        $breakoutTriggered = false;
-        $breakoutType = null;
-        $breakoutEntry = 0.0;
-        $breakoutCandleIndex = -1;
-
-        $volumes = array_column($intradayCandles, 'volume');
-        $avgVol = count($volumes) > 0 ? array_sum($volumes) / count($volumes) : 0;
+        $openingCandles = 0;
+        $volumeSoFar = 0.0;
 
         foreach ($intradayCandles as $i => $candle) {
-            $date = new \DateTime("@" . $candle['timestamp']);
+            // The session's average volume as it stood before this candle printed
+            $avgVol = $i > 0 ? $volumeSoFar / $i : 0.0;
+            $volumeSoFar += $candle['volume'];
+
+            $date = new \DateTime('@' . $candle['timestamp']);
             $date->setTimezone(new \DateTimeZone('Asia/Kolkata'));
             $timeStr = $date->format('H:i');
 
             if ($timeStr >= '09:15' && $timeStr <= '09:25') {
                 $orbHigh = max($orbHigh, $candle['high']);
                 $orbLow = min($orbLow, $candle['low']);
-                $openingCandlesCount++;
+                $openingCandles++;
                 continue;
             }
 
-            if ($openingCandlesCount >= 3 && $orbHigh > 0 && $orbLow < INF && !$breakoutTriggered) {
-                $close = $candle['close'];
-                $vwap = $vwapArray[$i] ?? $close;
-                $vol = $candle['volume'];
-
-                if ($close > $orbHigh && $close > $vwap && $vol > $avgVol) {
-                    $breakoutTriggered = true;
-                    $breakoutType = 'BUY (Long)';
-                    $breakoutEntry = $close;
-                    $breakoutCandleIndex = $i;
-                } elseif ($close < $orbLow && $close < $vwap && $vol > $avgVol) {
-                    $breakoutTriggered = true;
-                    $breakoutType = 'SELL (Short)';
-                    $breakoutEntry = $close;
-                    $breakoutCandleIndex = $i;
-                }
+            if ($openingCandles < 3 || $orbHigh <= 0 || $orbLow >= INF) {
+                continue;
             }
-        }
 
-        if ($breakoutTriggered) {
-            $latestCandle = end($intradayCandles);
-            $latestPrice = $latestCandle['close'];
-            $latestVwap = end($vwapArray);
+            $close = $candle['close'];
+            $vwap = $vwapArray[$i] ?? $close;
 
-            $sl = $breakoutType === 'BUY (Long)' ? $orbLow : $orbHigh;
-            $risk = abs($breakoutEntry - $sl);
-            $tgt = $breakoutType === 'BUY (Long)' ? ($breakoutEntry + $risk * 2) : ($breakoutEntry - $risk * 2);
+            if ($candle['volume'] <= $avgVol) {
+                continue;
+            }
 
-            $status = 'Active';
-            if ($breakoutType === 'BUY (Long)') {
-                if ($latestPrice <= $sl) $status = 'Stopped Out (SL Hit) 🔴';
-                elseif ($latestPrice <= $latestVwap) $status = 'Trailing Stop Hit (Closed Below VWAP) 🔴';
-                elseif ($latestPrice >= $tgt) $status = 'Target 1:2 Hit (Profit Booked) 🟢';
+            if ($close > $orbHigh && $close > $vwap) {
+                $type = 'BUY (Long)';
+            } elseif ($close < $orbLow && $close < $vwap) {
+                $type = 'SELL (Short)';
             } else {
-                if ($latestPrice >= $sl) $status = 'Stopped Out (SL Hit) 🔴';
-                elseif ($latestPrice >= $latestVwap) $status = 'Trailing Stop Hit (Closed Above VWAP) 🔴';
-                elseif ($latestPrice <= $tgt) $status = 'Target 1:2 Hit (Profit Booked) 🟢';
+                continue;
             }
+
+            $confirmedAt = gmdate('H:i', $candle['timestamp'] + 19800); // IST
 
             return [
+                'type' => $type,
                 'orb_high' => round($orbHigh, 2),
                 'orb_low' => round($orbLow, 2),
-                'entry' => round($breakoutEntry, 2),
-                'type' => $breakoutType,
-                'stop_loss' => round($sl, 2),
-                'target' => round($tgt, 2),
-                'trail_sl' => round($latestVwap, 2),
-                'status' => $status,
-                'reason' => "Price broke range (₹{$orbLow} - ₹{$orbHigh}) at " . date('H:i', $intradayCandles[$breakoutCandleIndex]['timestamp'] + 19800) . " IST, confirmed by VWAP & volume.",
+                'breakout_index' => $i,
+                'confirm_price' => round($close, 2),
+                'confirmed_at' => $confirmedAt,
+                'reason' => 'Price closed outside the opening range (₹' . number_format($orbLow, 2) . ' - ₹' . number_format($orbHigh, 2) . ') at '
+                    . $confirmedAt . ' IST, confirmed by VWAP & volume.',
             ];
         }
 
         return null;
+    }
+
+    /**
+     * Turn a detected breakout into a tradeable setup.
+     *
+     * The breakout is only confirmed once its candle has closed — neither the closing
+     * price, nor VWAP, nor the volume comparison exist before that — so the first price
+     * actually available to trade on is the open of the following candle. Filling at
+     * the breakout level or at the confirming close would book a price that existed
+     * before the signal did.
+     *
+     * Null when the confirming candle is the last one there is: nothing to enter on yet.
+     */
+    public function fillOrbSetup(array $setup, ?array $entryCandle): ?array
+    {
+        if (! $entryCandle) {
+            return null;
+        }
+
+        $isBuy = $setup['type'] === 'BUY (Long)';
+        $entry = $entryCandle['open'];
+        $stopLoss = $isBuy ? $setup['orb_low'] : $setup['orb_high'];
+        $risk = abs($entry - $stopLoss);
+
+        // Price opened straight through the far side of the range — no risk to size against
+        if ($risk <= 0) {
+            return null;
+        }
+
+        return [
+            ...$setup,
+            'entry' => round($entry, 2),
+            'entry_at' => gmdate('H:i', $entryCandle['timestamp'] + 19800), // IST
+            'stop_loss' => round($stopLoss, 2),
+            'target' => round($isBuy ? $entry + $risk * 2 : $entry - $risk * 2, 2),
+            'risk' => round($risk, 2),
+            'risk_percent' => round($risk / $entry * 100, 2),
+        ];
+    }
+
+    /**
+     * Where a filled setup stands, walking every candle from the entry onwards.
+     *
+     * The card used to compare only the *latest* price against the levels, so a trade
+     * that had already been stopped out or trailed out went back to showing "Active"
+     * as soon as price came back through the level.
+     *
+     * @param array $after     Candles from the entry candle onwards
+     * @param array $afterVwap VWAP over the same candles
+     */
+    public function orbStatus(array $filled, array $after, array $afterVwap): array
+    {
+        $isBuy = $filled['type'] === 'BUY (Long)';
+        $entry = $filled['entry'];
+
+        $closed = fn (string $status, float $exit, int $timestamp) => [
+            'status' => $status,
+            'is_open' => false,
+            'exit' => round($exit, 2),
+            'exit_at' => gmdate('H:i', $timestamp + 19800),
+        ] + $this->orbPnl($isBuy, $entry, $exit);
+
+        foreach ($after as $i => $candle) {
+            // A 5-minute candle doesn't show which level was touched first, so a candle
+            // reaching both counts as the stop — the same rule the backtest uses.
+            if ($isBuy ? $candle['low'] <= $filled['stop_loss'] : $candle['high'] >= $filled['stop_loss']) {
+                return $closed('Stopped Out (SL Hit) 🔴', $filled['stop_loss'], $candle['timestamp']);
+            }
+
+            if ($isBuy ? $candle['high'] >= $filled['target'] : $candle['low'] <= $filled['target']) {
+                return $closed('Target 1:2 Hit 🟢', $filled['target'], $candle['timestamp']);
+            }
+
+            $vwap = $afterVwap[$i] ?? null;
+
+            if ($vwap !== null && ($isBuy ? $candle['close'] <= $vwap : $candle['close'] >= $vwap)) {
+                $inProfit = $isBuy ? $candle['close'] > $entry : $candle['close'] < $entry;
+
+                return $closed('Trailing Stop Hit (VWAP) ' . ($inProfit ? '🟢' : '🔴'), $candle['close'], $candle['timestamp']);
+            }
+        }
+
+        $last = $after ? end($after) : null;
+
+        return [
+            'status' => 'Active',
+            'is_open' => true,
+            'exit' => null,
+            'exit_at' => null,
+        ] + $this->orbPnl($isBuy, $entry, $last['close'] ?? $entry);
+    }
+
+    protected function orbPnl(bool $isBuy, float $entry, float $price): array
+    {
+        $pnl = $isBuy ? $price - $entry : $entry - $price;
+
+        return [
+            'pnl' => round($pnl, 2),
+            'pnl_percent' => $entry > 0 ? round($pnl / $entry * 100, 2) : 0.0,
+        ];
+    }
+
+    /**
+     * The ORB setup for a session's candles so far: detection, the fill that follows
+     * it, and where the trade stands now. Used by everything that displays live data.
+     *
+     * A setup whose breakout candle is the newest one comes back with a null entry —
+     * the breakout is confirmed but the price to enter at hasn't printed yet.
+     */
+    public function liveOrbSetup(array $intradayCandles, array $vwapArray): ?array
+    {
+        $setup = $this->calculateOrbSetup($intradayCandles, $vwapArray);
+
+        if (! $setup) {
+            return null;
+        }
+
+        $next = $setup['breakout_index'] + 1;
+        $trailSl = $vwapArray ? round(end($vwapArray), 2) : null;
+        $filled = $this->fillOrbSetup($setup, $intradayCandles[$next] ?? null);
+
+        if (! $filled) {
+            return [
+                ...$setup,
+                'entry' => null,
+                'entry_at' => null,
+                'stop_loss' => null,
+                'target' => null,
+                'risk' => null,
+                'risk_percent' => null,
+                'status' => 'Awaiting entry at the next 5m open',
+                'is_open' => true,
+                'exit' => null,
+                'exit_at' => null,
+                'pnl' => null,
+                'pnl_percent' => null,
+                'trail_sl' => $trailSl,
+            ];
+        }
+
+        return [
+            ...$filled,
+            ...$this->orbStatus($filled, array_slice($intradayCandles, $next), array_slice($vwapArray, $next)),
+            'trail_sl' => $trailSl,
+        ];
     }
 }

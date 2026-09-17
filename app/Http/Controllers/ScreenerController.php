@@ -10,6 +10,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use App\Services\NseService;
+use App\Services\ScreenerService;
 use App\Services\StockDataService;
 use App\Services\IndicatorService;
 
@@ -176,7 +177,7 @@ class ScreenerController extends Controller
         });
     }
 
-    public function analyze(Request $request, StockDataService $dataService, IndicatorService $indicators)
+    public function analyze(Request $request, StockDataService $dataService, IndicatorService $indicators, ScreenerService $screener)
     {
         $symbol = str_replace(' ', '', strtoupper($request->query('symbol')));
         if (!$symbol) {
@@ -477,9 +478,7 @@ class ScreenerController extends Controller
         // ORB + VWAP Breakout Strategy Check
         $orbSetup = null;
         if ($intradayCandles && count($intradayCandles) >= 4) {
-            $vwapArray = $indicators->vwap($intradayCandles);
-            $screenerService = app(\App\Services\ScreenerService::class);
-            $orbSetup = $screenerService->calculateOrbSetup($intradayCandles, $vwapArray);
+            $orbSetup = $screener->liveOrbSetup($intradayCandles, $indicators->vwap($intradayCandles));
         }
 
         return response()->json([

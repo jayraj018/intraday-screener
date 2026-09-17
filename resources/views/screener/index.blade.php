@@ -1198,7 +1198,7 @@
             <!-- Trade Parameters -->
             <div id="orbTradeParameters" style="border-top: 1px solid rgba(255,255,255,0.05); padding-top: 16px; display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 16px;">
                 <div>
-                    <div style="font-size: 10px; color: var(--text-secondary);">Breakout Entry Trigger</div>
+                    <div style="font-size: 10px; color: var(--text-secondary);" id="orbEntryLabel">Entry</div>
                     <div class="price-val" id="orbEntryVal" style="color: white; font-size: 18px;">₹0.00</div>
                 </div>
                 <div>
@@ -1209,7 +1209,20 @@
                     <div style="font-size: 10px; color: var(--text-secondary);">Target (1:2 R:R)</div>
                     <div class="price-val" id="orbTgtVal" style="color: var(--accent-green); font-size: 18px;">₹0.00</div>
                 </div>
+                <div>
+                    <div style="font-size: 10px; color: var(--text-secondary);" id="orbOutcomeLabel">Result</div>
+                    <div class="price-val" id="orbOutcomeVal" style="color: white; font-size: 18px;">—</div>
+                </div>
             </div>
+
+            <!-- Breakout confirmed on the newest candle: the entry price hasn't printed yet -->
+            <div id="orbPendingNote" style="display: none; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 16px; font-size: 13px; color: var(--text-secondary);">
+                Breakout confirmed on the latest 5-minute candle. The entry is the <strong>open of the next candle</strong>, which hasn't printed yet — there is no fill price to show.
+            </div>
+
+            <p style="margin-top: 16px; font-size: 11px; color: var(--text-secondary); line-height: 1.6;">
+                This setup is a record of what the rules did earlier in the session, not an order to place now. The entry shown is the fill the breakout would have received at the time — the current price is at the top of this panel.
+            </p>
         </div>
 
         <!-- Live Intraday VWAP & 20 EMA Setup -->
@@ -1785,18 +1798,19 @@
                 // Live ORB + VWAP Section
                 const orbContainer = document.getElementById('orbSetupContainer');
                 if (data.orb_setup) {
+                    const orb = data.orb_setup;
                     orbContainer.style.display = 'block';
-                    document.getElementById('orbReason').innerText = data.orb_setup.reason;
-                    document.getElementById('orbHighVal').innerText = `₹${data.orb_setup.orb_high.toFixed(2)}`;
-                    document.getElementById('orbLowVal').innerText = `₹${data.orb_setup.orb_low.toFixed(2)}`;
-                    document.getElementById('orbTrailVwapVal').innerText = `₹${data.orb_setup.trail_sl.toFixed(2)}`;
+                    document.getElementById('orbReason').innerText = orb.reason;
+                    document.getElementById('orbHighVal').innerText = `₹${orb.orb_high.toFixed(2)}`;
+                    document.getElementById('orbLowVal').innerText = `₹${orb.orb_low.toFixed(2)}`;
+                    document.getElementById('orbTrailVwapVal').innerText = orb.trail_sl === null ? '—' : `₹${orb.trail_sl.toFixed(2)}`;
 
                     const orbBadge = document.getElementById('orbDecisionBadge');
-                    orbBadge.innerText = data.orb_setup.status;
-                    
-                    const isTriggered = data.orb_setup.status === 'Active';
+                    orbBadge.innerText = orb.status;
+
+                    const isTriggered = orb.status === 'Active';
                     if (isTriggered) {
-                        const isBuy = data.orb_setup.type.includes('BUY');
+                        const isBuy = orb.type.includes('BUY');
                         orbBadge.style.background = isBuy ? 'var(--glow-green)' : 'var(--glow-red)';
                         orbBadge.style.color = isBuy ? 'var(--accent-green)' : 'var(--accent-red)';
                         orbBadge.style.border = isBuy ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(239, 68, 68, 0.3)';
@@ -1806,9 +1820,31 @@
                         orbBadge.style.border = '1px solid var(--border-color)';
                     }
 
-                    document.getElementById('orbEntryVal').innerText = `₹${data.orb_setup.entry.toFixed(2)} (${data.orb_setup.type})`;
-                    document.getElementById('orbSlVal').innerText = `₹${data.orb_setup.stop_loss.toFixed(2)}`;
-                    document.getElementById('orbTgtVal').innerText = `₹${data.orb_setup.target.toFixed(2)}`;
+                    // The breakout is only confirmed once its candle closes, so the entry is
+                    // the next candle's open — which may not have printed yet.
+                    const orbParams = document.getElementById('orbTradeParameters');
+                    const orbPending = document.getElementById('orbPendingNote');
+
+                    if (orb.entry === null) {
+                        orbParams.style.display = 'none';
+                        orbPending.style.display = 'block';
+                    } else {
+                        orbParams.style.display = 'grid';
+                        orbPending.style.display = 'none';
+
+                        document.getElementById('orbEntryLabel').innerText = `Entry — filled at the ${orb.entry_at} open`;
+                        document.getElementById('orbEntryVal').innerText = `₹${orb.entry.toFixed(2)} (${orb.type})`;
+                        document.getElementById('orbSlVal').innerText = `₹${orb.stop_loss.toFixed(2)} (${orb.risk_percent.toFixed(2)}% risk)`;
+                        document.getElementById('orbTgtVal').innerText = `₹${orb.target.toFixed(2)}`;
+
+                        const sign = orb.pnl >= 0 ? '+' : '';
+                        const orbOutcomeVal = document.getElementById('orbOutcomeVal');
+                        document.getElementById('orbOutcomeLabel').innerText = orb.is_open
+                            ? 'Open P&L since entry'
+                            : `Closed ${orb.exit_at} at ₹${orb.exit.toFixed(2)}`;
+                        orbOutcomeVal.innerText = `${sign}₹${orb.pnl.toFixed(2)} (${sign}${orb.pnl_percent.toFixed(2)}%)`;
+                        orbOutcomeVal.style.color = orb.pnl >= 0 ? 'var(--accent-green)' : 'var(--accent-red)';
+                    }
                 } else {
                     orbContainer.style.display = 'none';
                 }
