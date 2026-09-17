@@ -63,6 +63,28 @@ return [
     // ...and only if the backtest produced at least this many trades, so a lucky handful doesn't qualify
     'min_backtest_trades' => 20,
 
+    // "Can I trade this now?" on the search page. These bound a live intraday entry:
+    // it is only offered while the risk is small enough to be worth taking and there
+    // is enough of the session left to manage the trade.
+    'live' => [
+        // Widest stop, as a % of the price, that still counts as a tradeable entry.
+        // Above this, price has run too far from its support to enter safely — the
+        // answer is to wait for a pullback, not to take a bigger loss.
+        'max_risk_percent' => 2.5,
+
+        // The latest candle's volume must be at least this multiple of the recent
+        // average, so an entry isn't taken into a dead tape
+        'min_relative_volume' => 1.0,
+
+        // The stop sits this far beyond the level it is based on, so ordinary noise
+        // around VWAP or the EMA doesn't trigger it
+        'stop_buffer' => 0.005,
+
+        // No new intraday entry after this time, and everything squared off by close
+        'no_new_entry_after' => '15:00',
+        'square_off_at' => '15:15',
+    ],
+
     // Secret required to start a backtest from the web (/api/run-backtest?token=...).
     // Leave unset to disable that URL entirely.
     'backtest_token' => env('BACKTEST_TOKEN'),

@@ -4,6 +4,9 @@ namespace App\Services;
 
 class ScreenerService
 {
+    /** Length of one intraday candle, used to tell a finished bar from the one still filling. */
+    protected const INTRADAY_SECONDS = 300;
+
     public function __construct(
         protected StockDataService $dataService,
         protected IndicatorService $indicators,
@@ -321,6 +324,195 @@ class ScreenerService
             'confidence' => $volumeSurge ? 'higher' : 'moderate',
             'reason' => $details . ($volumeSurge ? ', confirmed by a volume surge' : ', no unusual volume yet'),
         ];
+    }
+
+    /**
+     * The most recent trading session's candles out of a multi-day intraday fetch.
+     *
+     * Anything reading a single session — an opening range, a day's VWAP — needs this,
+     * because a multi-day array would fold several 09:15 opens into one range.
+     */
+    public function latestSession(array $intradayCandles): array
+    {
+        $sessions = [];
+
+        foreach ($intradayCandles as $candle) {
+            $sessions[gmdate('Y-m-d', $candle['timestamp'] + 19800)][] = $candle; // IST date
+        }
+
+        return $sessions ? end($sessions) : [];
+    }
+
+    /**
+     * Whether this stock can be entered right now, at the price on screen.
+     *
+     * Every other setup on the page reports what the rules did earlier in the session,
+     * so the entry price they show has already gone. This one measures against the
+     * latest candle, so the entry is a price still available — and answers WAIT rather
+     * than inventing a level when nothing is tradeable.
+     *
+     * Rule-based only: it reports whether the conditions are met, never whether the
+     * trade will work out.
+     */
+    public function liveTradeDecision(array $intradayCandles): ?array
+    {
+        $limits = config('screener.live');
+        $rrRatio = config('screener.risk_reward_ratio');
+
+        $latest = end($intradayCandles);
+
+        if (! $latest) {
+            return null;
+        }
+
+        $price = $latest['close'];
+
+        // The newest candle is still filling, so only a fraction of its volume has
+        // printed. Measuring that against a full-bar average makes every stock look
+        // like it has no volume, so the volume test uses the last complete bar while
+        // the price stays live.
+        $complete = $intradayCandles;
+
+        if (end($complete)['timestamp'] + self::INTRADAY_SECONDS > time()) {
+            array_pop($complete);
+        }
+
+        // VWAP restarts each session; the 20 EMA does not, so it is computed over
+        // every candle supplied while VWAP sees only today's.
+        $today = $this->latestSession($intradayCandles);
+
+        $vwapArray = $this->indicators->vwap($today);
+        $emaArray = $this->indicators->emaArray(array_column($intradayCandles, 'close'), 20);
+        $avgVolume = $this->indicators->averageVolume($complete, 20);
+        $lastComplete = end($complete);
+
+        if (! $vwapArray || ! $emaArray || ! $avgVolume || ! $lastComplete) {
+            return null;
+        }
+
+        $vwap = end($vwapArray);
+        $ema20 = end($emaArray);
+        $relativeVolume = $lastComplete['volume'] / $avgVolume;
+
+        $now = now('Asia/Kolkata');
+        $sessionOver = gmdate('Y-m-d', $latest['timestamp'] + 19800) !== $now->toDateString();
+        $tooLate = ! $sessionOver && $now->format('H:i') >= $limits['no_new_entry_after'];
+
+        // Both levels on the same side of price, or there is no side to take
+        $direction = match (true) {
+            $price > $vwap && $price > $ema20 => 'BUY',
+            $price < $vwap && $price < $ema20 => 'SELL',
+            default => null,
+        };
+
+        $stop = $target = $risk = $riskPercent = null;
+
+        if ($direction) {
+            // The stop goes beyond *both* levels, so a wick through the nearer one
+            // doesn't close the trade
+            $stop = $direction === 'BUY'
+                ? min($vwap, $ema20) * (1 - $limits['stop_buffer'])
+                : max($vwap, $ema20) * (1 + $limits['stop_buffer']);
+
+            $risk = abs($price - $stop);
+            $riskPercent = $risk / $price * 100;
+            $target = $direction === 'BUY' ? $price + $risk * $rrRatio : $price - $risk * $rrRatio;
+        }
+
+        $blockers = [];
+
+        if ($sessionOver) {
+            $blockers[] = 'the market is closed — these are the last session\'s candles';
+        } elseif ($tooLate) {
+            $blockers[] = 'too late in the session to open a new intraday trade (cut-off ' . $limits['no_new_entry_after'] . ')';
+        }
+
+        if (! $direction) {
+            $blockers[] = 'price is between VWAP and the 20 EMA, so there is no clear side to take';
+        } elseif ($riskPercent > $limits['max_risk_percent']) {
+            $blockers[] = 'price has run ' . round($riskPercent, 2) . '% above its support — too far to enter safely';
+        }
+
+        if ($relativeVolume < $limits['min_relative_volume']) {
+            $blockers[] = 'volume is below average, so the move isn\'t being backed';
+        }
+
+        $action = $blockers ? 'WAIT' : $direction;
+
+        return [
+            'as_of' => gmdate('H:i', $latest['timestamp'] + 19800),
+            'price' => round($price, 2),
+            'action' => $action,
+            'direction' => $direction,
+            'checks' => [
+                [
+                    'label' => 'Price vs VWAP',
+                    'detail' => '₹' . number_format($price, 2) . ($price > $vwap ? ' above ' : ' below ') . '₹' . number_format($vwap, 2),
+                    'pass' => $direction !== null,
+                ],
+                [
+                    'label' => 'Price vs 20 EMA',
+                    'detail' => '₹' . number_format($price, 2) . ($price > $ema20 ? ' above ' : ' below ') . '₹' . number_format($ema20, 2),
+                    'pass' => $direction !== null,
+                ],
+                [
+                    'label' => 'Volume',
+                    'detail' => 'last full 5m bar ' . number_format($lastComplete['volume']) . ' vs ' . number_format($avgVolume) . ' average (' . round($relativeVolume, 2) . 'x)',
+                    'pass' => $relativeVolume >= $limits['min_relative_volume'],
+                ],
+                [
+                    'label' => 'Risk to support',
+                    'detail' => $riskPercent === null
+                        ? 'no side to measure from'
+                        : round($riskPercent, 2) . '% (limit ' . $limits['max_risk_percent'] . '%)',
+                    'pass' => $riskPercent !== null && $riskPercent <= $limits['max_risk_percent'],
+                ],
+                [
+                    'label' => 'Session time',
+                    'detail' => $sessionOver ? 'market closed' : ($tooLate ? 'past the ' . $limits['no_new_entry_after'] . ' cut-off' : 'open until ' . $limits['square_off_at']),
+                    'pass' => ! $sessionOver && ! $tooLate,
+                ],
+            ],
+            'blockers' => $blockers,
+            'watch' => $this->liveTradeWatch($action, $direction, $vwap, $ema20, $riskPercent, $limits),
+            'entry' => $action === 'WAIT' ? null : round($price, 2),
+            'stop_loss' => $action === 'WAIT' ? null : round($stop, 2),
+            'target' => $action === 'WAIT' ? null : round($target, 2),
+            'risk' => $action === 'WAIT' ? null : round($risk, 2),
+            'risk_percent' => $action === 'WAIT' ? null : round($riskPercent, 2),
+            'reward' => $action === 'WAIT' ? null : round($risk * $rrRatio, 2),
+            'reward_percent' => $action === 'WAIT' ? null : round($risk * $rrRatio / $price * 100, 2),
+            'rr_ratio' => $rrRatio,
+            'square_off_at' => $limits['square_off_at'],
+        ];
+    }
+
+    /**
+     * What has to happen before a waiting stock becomes tradeable, in the same terms
+     * the decision itself uses — so "WAIT" is an instruction rather than a dead end.
+     */
+    protected function liveTradeWatch(string $action, ?string $direction, float $vwap, float $ema20, ?float $riskPercent, array $limits): ?string
+    {
+        if ($action !== 'WAIT') {
+            return null;
+        }
+
+        if (! $direction) {
+            return 'A long needs a close above ₹' . number_format(max($vwap, $ema20), 2)
+                . '; a short needs a close below ₹' . number_format(min($vwap, $ema20), 2) . '.';
+        }
+
+        if ($riskPercent !== null && $riskPercent > $limits['max_risk_percent']) {
+            // The price at which the stop would sit exactly on the risk limit
+            $level = $direction === 'BUY'
+                ? min($vwap, $ema20) * (1 - $limits['stop_buffer']) / (1 - $limits['max_risk_percent'] / 100)
+                : max($vwap, $ema20) * (1 + $limits['stop_buffer']) / (1 + $limits['max_risk_percent'] / 100);
+
+            return 'Wait for a pullback to about ₹' . number_format($level, 2)
+                . '. Entering there keeps the risk inside ' . $limits['max_risk_percent'] . '%.';
+        }
+
+        return 'Wait for volume to come in behind the move.';
     }
 
     /**

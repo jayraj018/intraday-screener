@@ -1225,47 +1225,49 @@
             </p>
         </div>
 
-        <!-- Live Intraday VWAP & 20 EMA Setup -->
-        <div class="intraday-setup-section" id="intradaySetupContainer" style="display: none; margin-bottom: 30px; border-radius: 16px; border: 1px dashed rgba(59, 130, 246, 0.4); padding: 24px; background: rgba(59, 130, 246, 0.02);">
+        <!-- Can I trade this now? The only panel whose entry price is still available -->
+        <div class="intraday-setup-section" id="tradeNowContainer" style="display: none; margin-bottom: 30px; border-radius: 16px; border: 1px solid rgba(59, 130, 246, 0.4); padding: 24px; background: rgba(59, 130, 246, 0.03);">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 10px;">
                 <h3 style="font-size: 16px; font-weight: 800; color: #3b82f6; display: flex; align-items: center; gap: 8px;">
-                    ⚡ Live 5m Intraday Setup (VWAP + 20 EMA + Volume)
+                    ⚡ Can I trade this now?
                 </h3>
-                <span class="decision-badge" id="intraDecisionBadge" style="font-size: 11px; font-weight: 800; padding: 4px 12px; border-radius: 20px; text-transform: uppercase;">BUY</span>
+                <span class="decision-badge" id="tradeNowBadge" style="font-size: 13px; font-weight: 800; padding: 6px 16px; border-radius: 20px; text-transform: uppercase;">WAIT</span>
             </div>
-            
-            <p id="intraReason" style="font-size: 13px; color: var(--text-secondary); margin-bottom: 16px; line-height: 1.6;">Reasoning...</p>
-            
-            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 16px; margin-bottom: 20px;">
-                <div style="background: rgba(255,255,255,0.02); border: 1px solid var(--border-color); padding: 12px; border-radius: 10px;">
-                    <div style="font-size: 10px; color: var(--text-secondary);">VWAP Support</div>
-                    <div class="price-val" id="intraVwapVal" style="font-size: 16px; color: white;">₹0.00</div>
+
+            <p id="tradeNowHeadline" style="font-size: 14px; color: white; margin-bottom: 16px; line-height: 1.6;"></p>
+
+            <!-- Every rule, and whether it passes right now -->
+            <div id="tradeNowChecks" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; margin-bottom: 20px;"></div>
+
+            <!-- Shown only when the answer is BUY or SELL -->
+            <div id="tradeNowLevels" style="display: none; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 16px; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 16px;">
+                <div>
+                    <div style="font-size: 10px; color: var(--text-secondary);">Entry (price right now)</div>
+                    <div class="price-val" id="tradeNowEntry" style="color: white; font-size: 18px;">₹0.00</div>
                 </div>
-                <div style="background: rgba(255,255,255,0.02); border: 1px solid var(--border-color); padding: 12px; border-radius: 10px;">
-                    <div style="font-size: 10px; color: var(--text-secondary);">20 EMA Support</div>
-                    <div class="price-val" id="intraEmaVal" style="font-size: 16px; color: white;">₹0.00</div>
+                <div>
+                    <div style="font-size: 10px; color: var(--text-secondary);">Stop-Loss</div>
+                    <div class="price-val" id="tradeNowStop" style="color: var(--accent-red); font-size: 18px;">₹0.00</div>
                 </div>
-                <div style="background: rgba(255,255,255,0.02); border: 1px solid var(--border-color); padding: 12px; border-radius: 10px;">
-                    <div style="font-size: 10px; color: var(--text-secondary);">5m Volume</div>
-                    <div class="price-val" id="intraVolVal" style="font-size: 16px; color: white;">0</div>
+                <div>
+                    <div style="font-size: 10px; color: var(--text-secondary);">Target</div>
+                    <div class="price-val" id="tradeNowTarget" style="color: var(--accent-green); font-size: 18px;">₹0.00</div>
+                </div>
+                <div>
+                    <div style="font-size: 10px; color: var(--text-secondary);">Square off by</div>
+                    <div class="price-val" id="tradeNowSquareOff" style="color: white; font-size: 18px;">15:15</div>
                 </div>
             </div>
 
-            <!-- Trade Parameters -->
-            <div id="intraTradeParameters" style="border-top: 1px solid rgba(255,255,255,0.05); padding-top: 16px; display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 16px;">
-                <div>
-                    <div style="font-size: 10px; color: var(--text-secondary);">Suggested Buy Entry</div>
-                    <div class="price-val" id="intraEntryVal" style="color: white; font-size: 18px;">₹0.00</div>
-                </div>
-                <div>
-                    <div style="font-size: 10px; color: var(--text-secondary);">Intraday Stop-Loss</div>
-                    <div class="price-val" id="intraSlVal" style="color: var(--accent-red); font-size: 18px;">₹0.00</div>
-                </div>
-                <div>
-                    <div style="font-size: 10px; color: var(--text-secondary);">Intraday Target (1:2)</div>
-                    <div class="price-val" id="intraTgtVal" style="color: var(--accent-green); font-size: 18px;">₹0.00</div>
-                </div>
+            <!-- Shown only when the answer is WAIT -->
+            <div id="tradeNowWatch" style="display: none; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 16px;">
+                <div style="font-size: 10px; color: var(--text-secondary); margin-bottom: 6px;">What to watch for</div>
+                <div id="tradeNowWatchText" style="font-size: 14px; color: white; line-height: 1.6;"></div>
             </div>
+
+            <p style="margin-top: 16px; font-size: 11px; color: var(--text-secondary); line-height: 1.6;">
+                These levels are measured against the latest candle, so the entry is a price still available — unlike the setups above, which record what the rules did earlier. This reports whether the conditions are met; it cannot tell you whether the trade will work out.
+            </p>
         </div>
 
         <!-- Strategy Setups -->
@@ -1670,7 +1672,7 @@
         document.getElementById('analysisSetupList').innerHTML = '<div style="color: var(--text-secondary);">Analyzing charts...</div>';
         document.getElementById('resultsAlertBadge').innerHTML = '';
         document.getElementById('analysisNewsList').innerHTML = '<div style="color: var(--text-secondary);">Searching headlines...</div>';
-        document.getElementById('intradaySetupContainer').style.display = 'none';
+        document.getElementById('tradeNowContainer').style.display = 'none';
         document.getElementById('orbSetupContainer').style.display = 'none';
 
         fetch(`/screener/analyze?symbol=${symbol}`)
@@ -1763,36 +1765,52 @@
                 document.getElementById('volStatus').className = `status ${volStat}`;
                 document.getElementById('volDetail').innerText = data.indicators.volume.detail;
 
-                // Live Intraday VWAP & 20 EMA Section
-                const intraContainer = document.getElementById('intradaySetupContainer');
-                if (data.intraday_setup) {
-                    intraContainer.style.display = 'block';
-                    document.getElementById('intraReason').innerText = data.intraday_setup.reason;
-                    document.getElementById('intraVwapVal').innerText = `₹${data.intraday_setup.vwap.toFixed(2)}`;
-                    document.getElementById('intraEmaVal').innerText = `₹${data.intraday_setup.ema20.toFixed(2)}`;
-                    document.getElementById('intraVolVal').innerText = `${(data.intraday_setup.volume / 1000).toFixed(1)}K / Avg: ${(data.intraday_setup.avg_volume / 1000).toFixed(1)}K`;
+                // "Can I trade this now?" — verdict against the live price
+                const tradeNowContainer = document.getElementById('tradeNowContainer');
+                if (data.trade_now) {
+                    const tn = data.trade_now;
+                    tradeNowContainer.style.display = 'block';
 
-                    const decisionBadge = document.getElementById('intraDecisionBadge');
-                    decisionBadge.innerText = data.intraday_setup.decision;
-                    
-                    const isBuy = data.intraday_setup.action === 'BUY';
-                    if (isBuy) {
-                        decisionBadge.style.background = 'var(--glow-green)';
-                        decisionBadge.style.color = 'var(--accent-green)';
-                        decisionBadge.style.border = '1px solid rgba(16, 185, 129, 0.3)';
-                        
-                        document.getElementById('intraTradeParameters').style.display = 'grid';
-                        document.getElementById('intraEntryVal').innerText = `₹${data.intraday_setup.price.toFixed(2)}`;
-                        document.getElementById('intraSlVal').innerText = `₹${data.intraday_setup.stop_loss.toFixed(2)}`;
-                        document.getElementById('intraTgtVal').innerText = `₹${data.intraday_setup.target.toFixed(2)}`;
+                    const badge = document.getElementById('tradeNowBadge');
+                    const isWait = tn.action === 'WAIT';
+                    const isBuy = tn.action === 'BUY';
+                    badge.innerText = isWait ? '⏸ Wait' : (isBuy ? '▲ Buy now' : '▼ Sell now');
+                    badge.style.background = isWait ? 'rgba(255,255,255,0.05)' : (isBuy ? 'var(--glow-green)' : 'var(--glow-red)');
+                    badge.style.color = isWait ? 'var(--text-secondary)' : (isBuy ? 'var(--accent-green)' : 'var(--accent-red)');
+                    badge.style.border = isWait ? '1px solid var(--border-color)'
+                        : (isBuy ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(239, 68, 68, 0.3)');
+
+                    document.getElementById('tradeNowHeadline').innerText = isWait
+                        ? `No entry at ₹${tn.price.toFixed(2)} (as of ${tn.as_of}) — ${tn.blockers.join('; ')}.`
+                        : `All conditions met at ₹${tn.price.toFixed(2)} (as of ${tn.as_of}).`;
+
+                    // One row per rule, so a WAIT always shows which rule blocked it
+                    document.getElementById('tradeNowChecks').innerHTML = tn.checks.map(c => `
+                        <div style="display: flex; gap: 8px; align-items: flex-start; background: rgba(255,255,255,0.02); border: 1px solid var(--border-color); padding: 10px 12px; border-radius: 10px;">
+                            <span style="color: ${c.pass ? 'var(--accent-green)' : 'var(--accent-red)'}; font-weight: 800;">${c.pass ? '✓' : '✗'}</span>
+                            <div>
+                                <div style="font-size: 11px; color: var(--text-secondary);">${c.label}</div>
+                                <div style="font-size: 13px; color: white;">${c.detail}</div>
+                            </div>
+                        </div>`).join('');
+
+                    const levels = document.getElementById('tradeNowLevels');
+                    const watch = document.getElementById('tradeNowWatch');
+
+                    if (isWait) {
+                        levels.style.display = 'none';
+                        watch.style.display = 'block';
+                        document.getElementById('tradeNowWatchText').innerText = tn.watch || '';
                     } else {
-                        decisionBadge.style.background = 'rgba(255,255,255,0.05)';
-                        decisionBadge.style.color = 'var(--text-secondary)';
-                        decisionBadge.style.border = '1px solid var(--border-color)';
-                        document.getElementById('intraTradeParameters').style.display = 'none';
+                        watch.style.display = 'none';
+                        levels.style.display = 'grid';
+                        document.getElementById('tradeNowEntry').innerText = `₹${tn.entry.toFixed(2)}`;
+                        document.getElementById('tradeNowStop').innerText = `₹${tn.stop_loss.toFixed(2)} (−${tn.risk_percent.toFixed(2)}%)`;
+                        document.getElementById('tradeNowTarget').innerText = `₹${tn.target.toFixed(2)} (+${tn.reward_percent.toFixed(2)}%)`;
+                        document.getElementById('tradeNowSquareOff').innerText = tn.square_off_at;
                     }
                 } else {
-                    intraContainer.style.display = 'none';
+                    tradeNowContainer.style.display = 'none';
                 }
 
                 // Live ORB + VWAP Section

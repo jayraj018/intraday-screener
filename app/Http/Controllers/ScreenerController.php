@@ -412,73 +412,20 @@ class ScreenerController extends Controller
             // Silence exception
         }
 
-        // Intraday VWAP & 20 EMA Strategy Run
-        $intradaySetup = null;
-        $intradayCandles = $dataService->getIntradayCandles($symbol);
-        if ($intradayCandles && count($intradayCandles) >= 20) {
-            $intraCloses = array_column($intradayCandles, 'close');
-            $intraLatest = end($intradayCandles);
-            $intraPrice = $intraLatest['close'];
+        // "Can I trade this now?" — the only panel whose entry price is one you can
+        // still get, because it is measured against the latest candle rather than the
+        // candle a setup triggered on earlier in the session.
+        // Several sessions, not one: the 20 EMA runs continuously across days, so a
+        // single-day fetch left it undefined until 20 candles had printed — no verdict
+        // before ~10:55, which is most of the morning.
+        $intradayCandles = $dataService->getIntradayCandles($symbol, '5d') ?? [];
+        $tradeNow = $screener->liveTradeDecision($intradayCandles);
+        $todayCandles = $screener->latestSession($intradayCandles);
 
-            // 1. VWAP
-            $vwapArray = $indicators->vwap($intradayCandles);
-            $vwapNow = end($vwapArray);
-
-            // 2. 20 EMA
-            $ema20Array = $indicators->emaArray($intraCloses, 20);
-            $ema20Now = end($ema20Array);
-
-            // 3. Intraday Volume (20-period average on 5m chart)
-            $intraAvgVol = $indicators->averageVolume($intradayCandles, 20);
-            $intraVolNow = $intraLatest['volume'];
-
-            if ($vwapNow && $ema20Now && $intraAvgVol) {
-                $isAboveVwap = $intraPrice > $vwapNow;
-                $isAboveEma20 = $intraPrice > $ema20Now;
-                $isHighVol = $intraVolNow > ($intraAvgVol * 1.2);
-
-                $decision = 'NO BUY / HOLD';
-                $reason = 'Stock is currently trading below VWAP or 20 EMA, indicating lack of intraday momentum.';
-                $setupAction = 'WAIT';
-
-                if ($isAboveVwap && $isAboveEma20) {
-                    $decision = 'BUY (High Momentum)';
-                    $setupAction = 'BUY';
-                    $reason = 'Stock is trading above both VWAP and 20 EMA on the 5-minute chart, indicating strong institutional buy pressure.';
-                    if ($isHighVol) {
-                        $reason .= ' Confirmed by above-average intraday volume.';
-                    } else {
-                        $reason .= ' However, volume is standard; watch for a volume surge.';
-                    }
-                } elseif ($intraPrice > $vwapNow && $intraPrice <= $ema20Now) {
-                    $reason = 'Stock is above VWAP but below 20 EMA. Wait for price to break above the 20 EMA (₹' . round($ema20Now, 2) . ') for confirmation.';
-                } elseif ($intraPrice <= $vwapNow && $intraPrice > $ema20Now) {
-                    $reason = 'Stock is above 20 EMA but below VWAP. Avoid buying until price breaks above VWAP (₹' . round($vwapNow, 2) . ') to avoid resistance.';
-                }
-
-                $sl = round(min($vwapNow, $ema20Now) * 0.995, 2);
-                $risk = $intraPrice - $sl;
-                $tgt = round($intraPrice + ($risk * 2), 2);
-
-                $intradaySetup = [
-                    'price' => round($intraPrice, 2),
-                    'vwap' => round($vwapNow, 2),
-                    'ema20' => round($ema20Now, 2),
-                    'volume' => $intraVolNow,
-                    'avg_volume' => round($intraAvgVol, 0),
-                    'decision' => $decision,
-                    'action' => $setupAction,
-                    'reason' => $reason,
-                    'stop_loss' => $sl,
-                    'target' => $tgt,
-                ];
-            }
-        }
-
-        // ORB + VWAP Breakout Strategy Check
+        // ORB reads one session's opening range, so it gets today's candles only
         $orbSetup = null;
-        if ($intradayCandles && count($intradayCandles) >= 4) {
-            $orbSetup = $screener->liveOrbSetup($intradayCandles, $indicators->vwap($intradayCandles));
+        if (count($todayCandles) >= 4) {
+            $orbSetup = $screener->liveOrbSetup($todayCandles, $indicators->vwap($todayCandles));
         }
 
         return response()->json([
@@ -493,7 +440,7 @@ class ScreenerController extends Controller
             'has_quarterly_result' => $hasQuarterlyResult,
             'result_sentiment' => $resultSentiment,
             'news' => $newsList,
-            'intraday_setup' => $intradaySetup,
+            'trade_now' => $tradeNow,
             'orb_setup' => $orbSetup,
         ]);
     }

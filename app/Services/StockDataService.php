@@ -138,6 +138,15 @@ class StockDataService
                 ];
             }
 
+            // Mid-session Yahoo appends a stub for the candle still being built: zero
+            // volume, and open/high/low/close all the same last traded price. Reading it
+            // as a real candle reported "volume 0" against a 130K average and priced
+            // setups off a bar that hadn't traded. Only trailing stubs are dropped — an
+            // illiquid stock can genuinely print no volume in the middle of a session.
+            while ($candles && end($candles)['volume'] == 0) {
+                array_pop($candles);
+            }
+
             return $candles;
         } catch (\Throwable $e) {
             Log::error("StockDataService: exception fetching intraday {$symbol} — " . $e->getMessage());
