@@ -179,6 +179,55 @@ class SwingContextTest extends TestCase
         $this->assertNull(app(SwingContextBuilder::class)->build('NEWCO', $short, [], $short, []));
     }
 
+    /**
+     * Mid-session today's bar is still forming: its close is the live price and its volume
+     * is only what has traded so far. A swing plan built on it changes price on every
+     * refresh — the same defect the intraday setups had.
+     */
+    public function test_the_context_drops_todays_bar_while_the_session_runs(): void
+    {
+        $today = \Illuminate\Support\Carbon::parse('2024-10-25 11:30', 'Asia/Kolkata');
+        \Illuminate\Support\Carbon::setTestNow($today);
+
+        // A series ending on "today", built backwards from it
+        $daily = [];
+
+        for ($i = 299; $i >= 0; $i--) {
+            $date = $today->copy()->subDays($i)->toDateString();
+            $price = 100 + (299 - $i) * 0.5;
+            $daily[] = ['date' => $date, 'open' => $price, 'high' => $price + 1, 'low' => $price - 1, 'close' => $price, 'volume' => 1_000_000];
+        }
+
+        $context = app(SwingContextBuilder::class)->build('TESTCO', $daily, [], $daily,
+            app(MarketRegimeService::class)->detect($daily));
+
+        $this->assertNotSame($today->toDateString(), $context->date(), 'the forming bar was used');
+        $this->assertSame($today->copy()->subDay()->toDateString(), $context->date());
+
+        \Illuminate\Support\Carbon::setTestNow();
+    }
+
+    public function test_the_context_keeps_todays_bar_once_the_session_has_closed(): void
+    {
+        $today = \Illuminate\Support\Carbon::parse('2024-10-25 16:30', 'Asia/Kolkata');
+        \Illuminate\Support\Carbon::setTestNow($today);
+
+        $daily = [];
+
+        for ($i = 299; $i >= 0; $i--) {
+            $date = $today->copy()->subDays($i)->toDateString();
+            $price = 100 + (299 - $i) * 0.5;
+            $daily[] = ['date' => $date, 'open' => $price, 'high' => $price + 1, 'low' => $price - 1, 'close' => $price, 'volume' => 1_000_000];
+        }
+
+        $context = app(SwingContextBuilder::class)->build('TESTCO', $daily, [], $daily,
+            app(MarketRegimeService::class)->detect($daily));
+
+        $this->assertSame($today->toDateString(), $context->date(), 'a completed session should be used');
+
+        \Illuminate\Support\Carbon::setTestNow();
+    }
+
     public function test_weekly_trend_is_unknown_rather_than_forced(): void
     {
         $daily = $this->series(300, fn ($i) => 100 + $i * 0.5);

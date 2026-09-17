@@ -118,6 +118,23 @@
         Signals come from the last completed daily close; the entry is the next session.
     </div>
 
+    {{-- Check one stock on demand, without waiting for the nightly scan --}}
+    <div class="card" style="margin-bottom: 8px;">
+        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+            <input id="q" type="text" placeholder="Check any stock for a swing setup (RELIANCE, TITAN, SBIN...)"
+                   autocomplete="off" spellcheck="false"
+                   style="flex: 1; min-width: 220px; padding: 12px 16px; border-radius: 10px; font-size: 14px;
+                          background: var(--bg-dark); border: 1px solid var(--border-color); color: var(--text-primary);">
+            <button id="go"
+                    style="padding: 12px 24px; border-radius: 10px; border: 0; cursor: pointer;
+                           background: var(--accent-purple); color: #fff; font-weight: 700; font-size: 13px;">
+                Check setup
+            </button>
+        </div>
+    </div>
+
+    <div id="result"></div>
+
     @if(! $scanDate)
         <div class="card">
             <div class="empty">
@@ -228,5 +245,111 @@
     @endif
 
 </div>
+
+<script>
+    const VERDICTS = {
+        SETUP:      { icon: '✅', colour: 'var(--accent-green)',  border: 'rgba(16,185,129,.4)'  },
+        SETUP_THIN: { icon: '⚠️', colour: 'var(--accent-orange)', border: 'rgba(245,158,11,.4)'  },
+        TOO_LATE:   { icon: '⏭️', colour: 'var(--accent-orange)', border: 'rgba(245,158,11,.4)'  },
+        WAIT:       { icon: '⏳', colour: 'var(--accent-orange)', border: 'rgba(245,158,11,.35)' },
+        NO_SETUP:   { icon: '—',  colour: 'var(--text-secondary)', border: 'var(--border-color)' },
+    };
+
+    const money = n => '₹' + Number(n).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+    function planRows(plan) {
+        if (!plan) return '';
+
+        return `<div class="levels">
+            <div><span>Entry ${plan.entry_is_trigger ? '(break above)' : '(next open)'}</span><b>${money(plan.entry)}</b></div>
+            <div><span>Stop — ${plan.stop_method.replace(/_/g, ' ')}</span><b style="color:var(--accent-red)">${money(plan.stop)}</b></div>
+            <div><span>Target 1 · ${plan.target1_r}R</span><b style="color:var(--accent-green)">${money(plan.target1)}</b></div>
+            ${plan.target2 ? `<div><span>Target 2 · ${plan.target2_r}R</span><b style="color:var(--accent-green)">${money(plan.target2)}</b></div>` : ''}
+            <div><span>Risk per share</span><b>${money(plan.risk_per_share)} (${plan.risk_percent}%)</b></div>
+        </div>`;
+    }
+
+    function strategyCard(s) {
+        const v = VERDICTS[s.state] || VERDICTS.NO_SETUP;
+        const checks = (s.checks || []).map(c => `
+            <div><span class="${c.pass ? 'y' : 'n'}">${c.pass ? '✓' : '✗'}</span>
+            <span><strong style="color:var(--text-primary)">${c.label}</strong> — ${c.detail}</span></div>`).join('');
+
+        return `<div class="card" style="border-color:${s.state === 'READY' ? 'rgba(16,185,129,.35)' : 'var(--border-color)'}">
+            <div class="head">
+                <div>
+                    <div class="sym" style="font-size:16px">${s.strategy}</div>
+                    <div class="badges"><span class="badge">${s.family.replace(/_/g, ' ')}</span>
+                    <span class="badge ${s.state === 'READY' ? 'ok' : 'warn'}">${s.state.replace(/_/g, ' ')}</span></div>
+                </div>
+                ${s.plan ? `<div class="score">${s.score}<small>/100</small></div>` : ''}
+            </div>
+            ${planRows(s.plan)}
+            ${s.watch_for ? `<div class="watch">⏳ ${s.watch_for}</div>` : ''}
+            <div class="checks">${checks}</div>
+        </div>`;
+    }
+
+    async function check() {
+        const symbol = document.getElementById('q').value.trim().toUpperCase();
+        const out = document.getElementById('result');
+
+        if (!symbol) return;
+
+        out.innerHTML = '<div class="card"><div class="empty">Checking ' + symbol + '…</div></div>';
+
+        try {
+            const res = await fetch('{{ route('swing.analyze') }}?symbol=' + encodeURIComponent(symbol));
+            const d = await res.json();
+
+            if (!res.ok) {
+                out.innerHTML = `<div class="card"><div style="color:var(--accent-red)">${d.error}</div></div>`;
+                return;
+            }
+
+            const v = VERDICTS[d.verdict.code] || VERDICTS.NO_SETUP;
+
+            // The gap between the close the plan was built on and the price right now is
+            // the thing most easily misread, so it is stated rather than implied.
+            const drift = d.current_price
+                ? `Signal close ${money(d.signal_close)} on ${d.as_of} · trading at ${money(d.current_price)} now`
+                : `Signal close ${money(d.signal_close)} on ${d.as_of}`;
+
+            out.innerHTML = `
+                <div class="card" style="border-color:${v.border}">
+                    <div class="head">
+                        <div>
+                            <div class="sym">${d.symbol}</div>
+                            <div style="color:var(--text-secondary);font-size:12px;margin-top:4px">${drift}</div>
+                        </div>
+                        <div style="text-align:right">
+                            <div style="font-size:19px;font-weight:800;color:${v.colour}">${v.icon} ${d.verdict.headline}</div>
+                            <div style="color:var(--text-secondary);font-size:12px;margin-top:4px">${d.verdict.detail}</div>
+                            <div class="score" style="margin-top:8px">${d.condition_score}<small>/100 stock condition</small></div>
+                        </div>
+                    </div>
+                    <div class="levels">
+                        <div><span>Market (NIFTY)</span><b style="font-size:14px">${(d.regime.trend || 'UNKNOWN').replace(/_/g, ' ')}</b></div>
+                        <div><span>Volatility</span><b style="font-size:14px">${(d.regime.volatility || 'UNKNOWN').replace(/_/g, ' ')}</b></div>
+                        <div><span>Weekly trend</span><b style="font-size:14px">${d.weekly_trend}</b></div>
+                        <div><span>vs NIFTY 20/50/100d</span><b style="font-size:14px">${
+                            [20, 50, 100].map(p => d.relative_strength.periods[p] === null ? 'n/a'
+                                : (d.relative_strength.periods[p] > 0 ? '+' : '') + d.relative_strength.periods[p] + '%').join(' / ')
+                        }</b></div>
+                        <div><span>Independent evidence</span><b style="font-size:14px">${d.agreement.families} ${d.agreement.families === 1 ? 'family' : 'families'}</b></div>
+                    </div>
+                    <div style="margin-top:12px;font-size:12px;color:var(--text-secondary)">${d.agreement.summary}</div>
+                </div>
+                <h2>What each strategy says <small>7 strategies, on the close of ${d.as_of}. A score appears only where there is a plan to score.</small></h2>
+                ${d.strategies.sort((a, b) => b.score - a.score).map(strategyCard).join('')}
+            `;
+        } catch (e) {
+            out.innerHTML = '<div class="card"><div style="color:var(--accent-red)">Could not reach the server. Try again in a moment.</div></div>';
+        }
+    }
+
+    document.getElementById('go').addEventListener('click', check);
+    document.getElementById('q').addEventListener('keydown', e => e.key === 'Enter' && check());
+</script>
 </body>
 </html>

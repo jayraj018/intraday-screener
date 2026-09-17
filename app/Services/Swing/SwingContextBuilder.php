@@ -3,6 +3,7 @@
 namespace App\Services\Swing;
 
 use App\Services\IndicatorService;
+use App\Services\ScreenerService;
 
 /**
  * Assembles the context a strategy is handed.
@@ -16,6 +17,7 @@ class SwingContextBuilder
     public function __construct(
         protected IndicatorService $indicators,
         protected RelativeStrengthService $relativeStrength,
+        protected ScreenerService $screener,
     ) {
     }
 
@@ -27,6 +29,15 @@ class SwingContextBuilder
      */
     public function build(string $symbol, array $daily, array $weekly, array $benchmark, array $regime): ?SwingContext
     {
+        // Today's daily bar is still forming during the session: its close is the live
+        // price and its volume is only what has traded so far. Reading it as finished is
+        // what made the intraday setups change price on every refresh, and every series
+        // here is dropped to completed bars for the same reason — including the benchmark,
+        // so relative strength compares two finished windows.
+        $daily = $this->screener->completedDailyCandles($daily);
+        $benchmark = $this->screener->completedDailyCandles($benchmark);
+        $weekly = $this->completedWeeks($weekly);
+
         // A 200-day trend filter needs 200 days. Below this the indicators return nulls
         // and a strategy would be judging a stock it cannot actually see.
         if (count($daily) < 60) {
@@ -47,6 +58,25 @@ class SwingContextBuilder
             bollingerWidth: $this->indicators->bollingerWidth($closes),
             averageVolume: $this->indicators->averageVolume($daily),
         );
+    }
+
+    /**
+     * Weekly bars with the current, unfinished week removed. A week is only a week once
+     * it has closed; judging a trend from two days of it reads the noise as the signal.
+     */
+    protected function completedWeeks(array $weekly): array
+    {
+        if (! $weekly) {
+            return [];
+        }
+
+        $weekStart = now('Asia/Kolkata')->startOfWeek()->toDateString();
+
+        if (end($weekly)['date'] >= $weekStart) {
+            array_pop($weekly);
+        }
+
+        return $weekly;
     }
 
     /**

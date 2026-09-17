@@ -15,6 +15,12 @@ Route::get('/api/swing', [SwingController::class, 'api'])
     ->middleware('throttle:60,1')
     ->name('swing.api');
 
+// Every swing strategy's verdict on one stock. Makes outbound calls to refresh that
+// symbol's candles, so it is throttled like the intraday analysis.
+Route::get('/swing/analyze', [SwingController::class, 'analyze'])
+    ->middleware('throttle:30,1')
+    ->name('swing.analyze');
+
 // Each of these makes outbound calls to the data provider on every request, so they are
 // throttled: without a limit, a handful of open tabs is enough to get the whole app
 // rate-limited upstream.

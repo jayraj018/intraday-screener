@@ -117,6 +117,20 @@ class CandleStore
         return $this->get($symbol, $interval);
     }
 
+    /**
+     * Stored candles, brought up to date first.
+     *
+     * A symbol never stored is downloaded in full; one already stored has only its recent
+     * tail refreshed. An ad-hoc lookup has to reflect the latest close, but re-downloading
+     * five years to learn what happened yesterday would make every search take seconds.
+     */
+    public function freshen(string $symbol, string $interval = '1d', string $fullRange = '2y', string $tailRange = '3mo'): array
+    {
+        $this->sync($symbol, $interval, $this->latestDate($symbol, $interval) ? $tailRange : $fullRange);
+
+        return $this->get($symbol, $interval);
+    }
+
     /** The most recent stored date, so a re-sync knows how far behind it is. */
     public function latestDate(string $symbol, string $interval = '1d'): ?string
     {
