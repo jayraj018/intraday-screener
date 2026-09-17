@@ -14,8 +14,10 @@ use App\Services\IndicatorService;
  */
 abstract class SwingStrategy implements SwingStrategyInterface
 {
-    public function __construct(protected IndicatorService $indicators)
-    {
+    public function __construct(
+        protected IndicatorService $indicators,
+        protected LiquidityService $liquidity,
+    ) {
     }
 
     protected function check(string $label, bool $pass, string $detail): array
@@ -73,6 +75,46 @@ abstract class SwingStrategy implements SwingStrategyInterface
         if ($distance <= 0) {
             return $this->noSetup($context, $checks);
         }
+
+        $qualification = config('swing.qualification');
+
+        // A stop this wide is a bet on the stock's volatility rather than on the setup
+        $riskPercent = $distance / $trigger * 100;
+
+        if ($riskPercent > $qualification['max_risk_percent']) {
+            $checks[] = $this->check('Risk is containable', false,
+                sprintf('The stop is %.1f%% away, above the %.1f%% limit', $riskPercent, $qualification['max_risk_percent']));
+
+            return $this->noSetup($context, $checks);
+        }
+
+        // Reward-to-risk is enforced, not merely displayed. It says nothing about the
+        // odds — only what the trade pays when it works — but a plan that pays too
+        // little for the risk taken is not worth taking whatever its score.
+        $rewardToRisk = $risk['target1_r'];
+
+        if ($rewardToRisk < $qualification['min_risk_reward']) {
+            $checks[] = $this->check('Reward covers the risk', false,
+                sprintf('Target 1 is %.1fR, below the %.1fR minimum', $rewardToRisk, $qualification['min_risk_reward']));
+
+            return $this->noSetup($context, $checks);
+        }
+
+        // The position the risk model would ask for has to be tradeable in this stock
+        $liquidity = $this->liquidity->assess($context, $distance);
+
+        if (! $liquidity['tradeable']) {
+            $checks[] = $this->check('Liquidity', false, 'LIQUIDITY_FAILED — ' . implode('; ', $liquidity['reasons']));
+
+            return $this->noSetup($context, $checks);
+        }
+
+        $checks[] = $this->check('Liquidity', true, sprintf(
+            '%s shares/day, ₹%s crore turnover%s',
+            number_format($liquidity['average_volume']),
+            number_format($liquidity['average_turnover'] / 10000000, 2),
+            $liquidity['position_percent'] === null ? '' : sprintf(', position is %.2f%% of a day', $liquidity['position_percent'])
+        ));
 
         $setup = new SwingSetup(
             symbol: $context->symbol,

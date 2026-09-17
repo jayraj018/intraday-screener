@@ -340,4 +340,68 @@ return [
         'upper_percentile' => 75,
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Liquidity
+    |--------------------------------------------------------------------------
+    |
+    | Position size is decided by risk, not by how much stock actually trades — so
+    | without this a thin stock can be handed a large position it could never be
+    | unwound from. Worse for swing than intraday: the position has to be carried for
+    | days and exited into the same thin book.
+    |
+    | These floors are conventional, NOT validated. They are here to be changed and
+    | tested, and every rejection says which one it failed.
+    */
+    'liquidity' => [
+        'min_average_volume' => 200000,       // shares/day, 20-day average
+        'min_average_turnover' => 20000000,   // ₹2 crore/day — volume alone hides a ₹5 stock
+        'min_price' => 20.0,                  // penny stocks quote wide and fill badly
+
+        // The position must be a small share of a normal day's volume, or the exit
+        // moves the price against itself.
+        'max_percent_of_daily_volume' => 2.0,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Data quality
+    |--------------------------------------------------------------------------
+    |
+    | A missing benchmark, a broken candle or too little history must produce
+    | INSUFFICIENT_DATA — never a signal built on a substituted default.
+    */
+    'data_quality' => [
+        'min_daily_bars' => 260,          // a 200-day trend plus room to measure it
+        'min_benchmark_bars' => 260,
+        'max_gap_days' => 10,             // a hole this long means the series is unusable
+        'max_stale_days' => 7,            // data older than this is not today's market
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Qualification
+    |--------------------------------------------------------------------------
+    |
+    | A setup is not QUALIFIED because its score is high. It is qualified when the
+    | required conditions pass AND the risk is worth taking AND there is evidence the
+    | strategy has an edge. The last of those is currently unmet for every strategy.
+    */
+    'qualification' => [
+        // Reward-to-risk below this is refused outright. R:R is not a probability —
+        // it only says what the trade pays if it works.
+        'min_risk_reward' => 1.5,
+
+        // A stop this wide means the plan's risk is really a bet on the stock's
+        // volatility rather than on the setup.
+        'max_risk_percent' => 12.0,
+
+        // Historical evidence required before a signal may be called QUALIFIED. With
+        // require_backtest_evidence = true nothing qualifies until a swing backtest has
+        // actually run — which is the honest state today.
+        'require_backtest_evidence' => true,
+        'min_backtest_trades' => 30,
+        'min_expectancy_r' => 0.0,
+    ],
+
 ];

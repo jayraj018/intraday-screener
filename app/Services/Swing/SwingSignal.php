@@ -17,6 +17,12 @@ final class SwingSignal
     public const EXTENDED = 'EXTENDED';
     public const NO_SETUP = 'NO_SETUP';
 
+    /** The data could not be trusted enough to judge the stock at all. */
+    public const INSUFFICIENT_DATA = 'INSUFFICIENT_DATA';
+
+    /** A setup existed but something has since broken it. */
+    public const INVALIDATED = 'INVALIDATED';
+
     /**
      * @param  array<int, array{label: string, pass: bool, detail: string}>  $checks
      */
@@ -33,6 +39,50 @@ final class SwingSignal
     public function isActionable(): bool
     {
         return $this->state === self::READY && $this->setup !== null;
+    }
+
+    /**
+     * QUALIFIED / NOT_QUALIFIED / INSUFFICIENT_DATA.
+     *
+     * Kept apart from `state` on purpose. State says what the chart is doing; this says
+     * whether the system is willing to stand behind it — which additionally requires
+     * historical evidence the strategy has an edge. Today nothing can be QUALIFIED,
+     * because no swing backtest has run.
+     */
+    public function qualification(?array $evidence = null): array
+    {
+        if ($this->state === self::INSUFFICIENT_DATA) {
+            return ['status' => 'INSUFFICIENT_DATA', 'reasons' => array_column($this->failedChecks(), 'detail')];
+        }
+
+        if (! $this->isActionable()) {
+            return ['status' => 'NOT_QUALIFIED', 'reasons' => array_column($this->failedChecks(), 'detail') ?: ['No setup today']];
+        }
+
+        $config = config('swing.qualification');
+
+        if (! $config['require_backtest_evidence']) {
+            return ['status' => 'QUALIFIED', 'reasons' => []];
+        }
+
+        if (! $evidence || ($evidence['trades'] ?? 0) < $config['min_backtest_trades']) {
+            return [
+                'status' => 'NOT_QUALIFIED',
+                'reasons' => [sprintf(
+                    'No validated history for this strategy (%d of %d trades recorded). A setup can look right and still have no measured edge.',
+                    $evidence['trades'] ?? 0, $config['min_backtest_trades']
+                )],
+            ];
+        }
+
+        if (($evidence['expectancy_r'] ?? -INF) < $config['min_expectancy_r']) {
+            return [
+                'status' => 'NOT_QUALIFIED',
+                'reasons' => [sprintf('Backtested expectancy is %+.3fR, below the %+.2fR required', $evidence['expectancy_r'], $config['min_expectancy_r'])],
+            ];
+        }
+
+        return ['status' => 'QUALIFIED', 'reasons' => []];
     }
 
     /** The conditions that failed, for a card that explains itself. */

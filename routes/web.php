@@ -46,3 +46,6 @@ Route::get('/api/run-{job}', [BackgroundRunController::class, 'start'])
 Route::get('/api/{job}-status', [BackgroundRunController::class, 'status'])
     ->whereIn('job', ['screener', 'backtest', 'swing'])
     ->name('background.status');
+
+
+    

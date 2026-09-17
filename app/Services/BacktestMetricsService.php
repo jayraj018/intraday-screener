@@ -21,10 +21,11 @@ class BacktestMetricsService
      * The aggregates are done in Postgres rather than by loading trades into PHP — a
      * Nifty 500 run stores around a hundred thousand of them.
      */
-    public function forRun(int $runId): array
+    public function forRun(int $runId, ?string $system = null): array
     {
         $rows = BacktestTrade::query()
             ->where('run_id', $runId)
+            ->when($system, fn ($q) => $q->where('system', $system))
             ->groupBy('strategy')
             ->select('strategy')
             ->selectRaw('COUNT(*) AS trades')
@@ -39,9 +40,17 @@ class BacktestMetricsService
             ->selectRaw('AVG(bars_held) AS avg_bars_held')
             ->selectRaw('MAX(r_multiple) AS best_trade_r')
             ->selectRaw('MIN(r_multiple) AS worst_trade_r')
+
+            // How trades ended, as rates. A strategy whose stop rate is near its win rate
+            // is being decided by its exits, not by its entries.
+            ->selectRaw("COUNT(*) FILTER (WHERE exit_reason IN ('target1','target_gap')) AS t1_hits")
+            ->selectRaw("COUNT(*) FILTER (WHERE exit_reason = 'target2') AS t2_hits")
+            ->selectRaw("COUNT(*) FILTER (WHERE exit_reason IN ('stop','stop_gap','trailing_stop')) AS stop_hits")
+            ->selectRaw("COUNT(*) FILTER (WHERE exit_reason IN ('max_holding_days','session_close')) AS time_exits")
             ->get();
 
         $sequences = $this->sequenceMetrics($runId);
+        $medians = $this->medianR($runId);
         $metrics = [];
 
         foreach ($rows as $row) {
@@ -65,6 +74,11 @@ class BacktestMetricsService
                 'total_return_r' => $this->round($row->total_return_r),
                 'net_pnl' => round((float) $row->net_pnl, 2),
                 'avg_bars_held' => $this->round($row->avg_bars_held, 2),
+                't1_hit_rate' => round($row->t1_hits / $trades * 100, 2),
+                't2_hit_rate' => round($row->t2_hits / $trades * 100, 2),
+                'stop_rate' => round($row->stop_hits / $trades * 100, 2),
+                'time_exit_rate' => round($row->time_exits / $trades * 100, 2),
+                'median_r' => $medians[$row->strategy] ?? null,
                 'best_trade_r' => $this->round($row->best_trade_r),
                 'worst_trade_r' => $this->round($row->worst_trade_r),
                 ...$sequences[$row->strategy] ?? ['max_drawdown_r' => null, 'max_consecutive_losses' => null],
@@ -72,6 +86,26 @@ class BacktestMetricsService
         }
 
         return $metrics;
+    }
+
+    /**
+     * Median R per strategy. The mean is pulled by a single outsized winner; the median
+     * says what a typical trade actually returned.
+     */
+    protected function medianR(int $runId): array
+    {
+        $byStrategy = [];
+
+        foreach (BacktestTrade::where('run_id', $runId)->orderBy('r_multiple')->cursor() as $trade) {
+            $byStrategy[$trade->strategy][] = $trade->r_multiple;
+        }
+
+        return array_map(function (array $values) {
+            $count = count($values);
+            $middle = intdiv($count, 2);
+
+            return round($count % 2 ? $values[$middle] : ($values[$middle - 1] + $values[$middle]) / 2, 4);
+        }, $byStrategy);
     }
 
     /**
