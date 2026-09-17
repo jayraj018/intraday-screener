@@ -86,21 +86,18 @@ class BacktestStatsTest extends TestCase
         $this->assertStringContainsString('survivorship', strtolower(implode(' ', $response->json('caveats'))));
     }
 
-    public function test_the_dashboard_shows_the_backtest_panel(): void
+    /**
+     * Metrics are served by /api/backtest-stats, not rendered on the dashboard. The
+     * dashboard only reads strategy_stats to decide which strategies Top Picks may count.
+     */
+    public function test_the_dashboard_does_not_render_backtest_metrics(): void
     {
         $this->seedRun();
 
         $this->get('/')
             ->assertOk()
-            ->assertSee('Backtest Results')
-            ->assertSee('Profit factor')
-            ->assertSee('BACKTEST RESULT')
-            ->assertSee('lost money after costs')   // the losing strategy's reason
-            ->assertSee('session close 97%');       // 264 of 272 trades
-    }
-
-    public function test_the_dashboard_has_no_backtest_panel_before_a_run(): void
-    {
-        $this->get('/')->assertOk()->assertDontSee('Backtest Results');
+            ->assertDontSee('Backtest Results')
+            ->assertDontSee('Profit factor')
+            ->assertDontSee('Max drawdown');
     }
 }

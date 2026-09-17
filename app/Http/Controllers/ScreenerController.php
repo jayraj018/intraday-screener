@@ -38,14 +38,15 @@ class ScreenerController extends Controller
         $minAgree = config('screener.min_strategies_agree');
         $minWinRate = config('screener.min_win_rate');
         $minExpectancy = config('screener.min_expectancy_r');
-        $strategyStats = StrategyStat::with('run')->get()->keyBy('strategy');
-        $backtestRun = $strategyStats->first()?->run;
+        // Only what Top Picks needs to decide which strategies get a vote. The full
+        // metrics live at /api/backtest-stats rather than on the dashboard.
+        $strategyStats = StrategyStat::all()->keyBy('strategy');
         $qualifiedStrategies = $strategyStats->filter->qualifies()->sortByDesc('win_rate');
 
         // Only strategies that proved themselves in the backtest get a vote
         $topPicks = $this->buildTopPicks($results->whereIn('strategy', $qualifiedStrategies->keys()), $minAgree);
 
-        return view('screener.index', compact('results', 'lastScanAt', 'eventBoard', 'topPicks', 'minAgree', 'minWinRate', 'minExpectancy', 'strategyStats', 'qualifiedStrategies', 'backtestRun'));
+        return view('screener.index', compact('results', 'lastScanAt', 'eventBoard', 'topPicks', 'minAgree', 'minWinRate', 'minExpectancy', 'strategyStats', 'qualifiedStrategies'));
     }
 
     /**
