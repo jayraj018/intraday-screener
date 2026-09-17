@@ -102,6 +102,21 @@ class CandleStore
         ])->all();
     }
 
+    /**
+     * Stored candles, downloading them first if this symbol has never been stored.
+     *
+     * A read-through, so a scan works on a fresh database without a separate backfill step
+     * — the first run is slow, every run after it is not.
+     */
+    public function remember(string $symbol, string $interval = '1d', string $range = '5y'): array
+    {
+        if (! $this->latestDate($symbol, $interval)) {
+            $this->sync($symbol, $interval, $range);
+        }
+
+        return $this->get($symbol, $interval);
+    }
+
     /** The most recent stored date, so a re-sync knows how far behind it is. */
     public function latestDate(string $symbol, string $interval = '1d'): ?string
     {

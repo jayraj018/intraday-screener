@@ -4,8 +4,10 @@ namespace App\Http\Controllers;
 
 use App\Console\Commands\RunBacktest;
 use App\Console\Commands\RunMorningScreener;
+use App\Console\Commands\RunSwingScan;
 use App\Models\ScreenerResult;
 use App\Models\StrategyStat;
+use App\Models\SwingSignal;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Symfony\Component\Process\PhpExecutableFinder;
@@ -30,6 +32,7 @@ class BackgroundRunController extends Controller
     protected const JOBS = [
         'screener' => ['command' => 'screener:run', 'status_key' => RunMorningScreener::STATUS_CACHE_KEY],
         'backtest' => ['command' => 'screener:backtest', 'status_key' => RunBacktest::STATUS_CACHE_KEY],
+        'swing' => ['command' => 'swing:scan', 'status_key' => RunSwingScan::STATUS_CACHE_KEY],
     ];
 
     public function start(Request $request, string $job)
@@ -75,6 +78,7 @@ class BackgroundRunController extends Controller
         return ['run' => Cache::get(self::JOBS[$job]['status_key'], ['state' => 'never_run'])] + match ($job) {
             'screener' => ['setups_today' => ScreenerResult::where('scan_date', now()->toDateString())->count()],
             'backtest' => ['strategies_saved' => StrategyStat::count(), 'last_saved_at' => StrategyStat::max('updated_at')],
+            'swing' => ['signals_today' => SwingSignal::where('scan_date', now('Asia/Kolkata')->toDateString())->count(), 'last_scan_date' => SwingSignal::max('scan_date')],
         };
     }
 

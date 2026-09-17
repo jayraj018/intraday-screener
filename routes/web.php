@@ -3,9 +3,17 @@
 use App\Http\Controllers\BackgroundRunController;
 use App\Http\Controllers\BacktestController;
 use App\Http\Controllers\ScreenerController;
+use App\Http\Controllers\SwingController;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/', [ScreenerController::class, 'index'])->name('screener.index');
+
+// Swing is a separate system with its own data, its own backtest and its own costs. It
+// shares a database and nothing else, and the two are never aggregated together.
+Route::get('/swing', [SwingController::class, 'index'])->name('swing.index');
+Route::get('/api/swing', [SwingController::class, 'api'])
+    ->middleware('throttle:60,1')
+    ->name('swing.api');
 
 // Each of these makes outbound calls to the data provider on every request, so they are
 // throttled: without a limit, a handful of open tabs is enough to get the whole app
@@ -26,9 +34,9 @@ Route::get('/api/backtest-stats', [BacktestController::class, 'stats'])
 // Start the daily scan or the backtest in the background (both run far longer than a web
 // request may): /api/run-screener?token=...  /api/run-backtest?token=...
 Route::get('/api/run-{job}', [BackgroundRunController::class, 'start'])
-    ->whereIn('job', ['screener', 'backtest'])
+    ->whereIn('job', ['screener', 'backtest', 'swing'])
     ->middleware('throttle:10,1')
     ->name('background.start');
 Route::get('/api/{job}-status', [BackgroundRunController::class, 'status'])
-    ->whereIn('job', ['screener', 'backtest'])
+    ->whereIn('job', ['screener', 'backtest', 'swing'])
     ->name('background.status');

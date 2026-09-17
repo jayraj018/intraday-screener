@@ -1135,6 +1135,10 @@
     <header>
         <div class="header-content">
             <div class="logo-area">
+                <div style="display:flex;gap:8px;margin-bottom:18px;flex-wrap:wrap;">
+                    <a href="{{ route('screener.index') }}" style="padding:9px 18px;border-radius:10px;text-decoration:none;border:1px solid var(--accent-blue);background:var(--accent-blue);color:#fff;font-weight:700;font-size:12px;letter-spacing:.05em;">INTRADAY</a>
+                    <a href="{{ route('swing.index') }}" style="padding:9px 18px;border-radius:10px;text-decoration:none;border:1px solid var(--border-color);color:var(--text-secondary);font-weight:700;font-size:12px;letter-spacing:.05em;">SWING</a>
+                </div>
                 <h1>Morning Intraday Screener</h1>
                 <p>Advanced algorithmic setup analysis for active traders</p>
             </div>
