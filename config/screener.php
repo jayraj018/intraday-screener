@@ -94,6 +94,25 @@ return [
         'square_off_at' => '15:15',
     ],
 
+    // Telegram BUY alerts (`php artisan screener:watch`, every few minutes in the session)
+    //
+    // Off unless asked for: replayed over 56 sessions to 23 Nov 2026 on today's index members,
+    // after costs, the rule lost on 262 alerts and did no better than random liquid stocks.
+    //
+    //   alerts          34.7% wins, -0.26R per trade (95% range -0.41 to -0.12)
+    //   random stocks   36.6% wins, -0.20R per trade
+    'alerts' => [
+        'enabled' => (bool) env('INTRADAY_ALERTS', false),
+        'test_result' => '262 past alerts: 35% won, average loss ₹261 per ₹1,000 risked',
+
+        'start' => '09:30',       // VWAP means little in the first candles
+        'max_per_day' => 5,
+        'max_watched' => 15,      // each one is a download on every run
+
+        // "Not above" is the price where the target still pays this many times the risk
+        'min_risk_reward' => 1.5,
+    ],
+
     // How the backtest assumes a signal is filled.
     //
     //   next_open    - enter at the next session's open. A signal found at a day's close

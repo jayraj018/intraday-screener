@@ -155,6 +155,7 @@ class PaperTradeService
             'entry_date' => $result->entryDate,
             'entry_price' => round($result->entryPrice, 4),
             'quantity' => $result->quantity,
+            'bars_held' => $result->barsHeld,
         ];
 
         // The walk closes whatever is left on the last bar it is given. Short of the holding
@@ -174,7 +175,6 @@ class PaperTradeService
             'costs' => round($result->costs, 2),
             'net_pnl' => round($result->netPnl, 2),
             'r_multiple' => round($result->rMultiple, 4),
-            'bars_held' => $result->barsHeld,
         ]);
     }
 

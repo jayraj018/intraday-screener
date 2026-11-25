@@ -37,6 +37,7 @@ class SwingPaperTrade extends Model
         'exit_price' => 'float',
         'net_pnl' => 'float',
         'r_multiple' => 'float',
+        'bars_held' => 'integer',
     ];
 
     public function scopeUnresolved($query)

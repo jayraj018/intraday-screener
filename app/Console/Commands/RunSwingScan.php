@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use App\Console\Concerns\ReportsRunStatus;
 use App\Services\ScreenerService;
+use App\Services\Swing\SwingAlertService;
 use App\Services\Swing\SwingScannerService;
 use Illuminate\Console\Command;
 use Illuminate\Contracts\Console\Isolatable;
@@ -18,9 +19,39 @@ class RunSwingScan extends Command implements Isolatable
 
     protected $description = 'Run the enabled swing strategies across the watchlist and store what they found';
 
-    public function handle(SwingScannerService $scanner, ScreenerService $screener): int
+    protected array $result = [];
+
+    public function handle(SwingScannerService $scanner, ScreenerService $screener, SwingAlertService $alerts): int
     {
-        return $this->withRunStatus(fn () => $this->scan($scanner, $screener));
+        // A scan of chosen stocks is somebody looking at something, not the daily run
+        $announce = ! $this->option('symbols');
+
+        try {
+            $exit = $this->withRunStatus(fn () => $this->scan($scanner, $screener));
+        } catch (\Throwable $e) {
+            // Our own refusals explain themselves; a database error would quote its query
+            $announce && $alerts->scanFailed($e::class === \RuntimeException::class ? $e->getMessage() : class_basename($e) . ' — see the logs.');
+
+            throw $e;
+        }
+
+        if ($announce) {
+            $this->announce($alerts, $exit);
+        }
+
+        return $exit;
+    }
+
+    protected function announce(SwingAlertService $alerts, int $exit): void
+    {
+        try {
+            $exit === self::SUCCESS
+                ? $alerts->scanFinished($this->result)
+                : $alerts->scanFailed('No stock could be scanned: prices could not be refreshed.');
+        } catch (\Throwable $e) {
+            report($e);
+            $this->warn('The alert could not be sent: ' . class_basename($e));
+        }
     }
 
     protected function scan(SwingScannerService $scanner, ScreenerService $screener): int
@@ -35,7 +66,7 @@ class RunSwingScan extends Command implements Isolatable
         $bar->start();
         $done = 0;
 
-        $result = $scanner->scan($symbols, function () use ($bar, &$done, $symbols) {
+        $result = $this->result = $scanner->scan($symbols, function () use ($bar, &$done, $symbols) {
             $bar->advance();
             $this->recordProgress(++$done, count($symbols));
         }, paper: ! $this->option('symbols'));

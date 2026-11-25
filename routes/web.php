@@ -45,11 +45,11 @@ Route::get('/api/backtest-stats', [BacktestController::class, 'stats'])
 // Start the daily scan or the backtest in the background (both run far longer than a web
 // request may): /api/run-screener?token=...  /api/run-backtest?token=...
 Route::get('/api/run-{job}', [BackgroundRunController::class, 'start'])
-    ->whereIn('job', ['screener', 'backtest', 'swing'])
+    ->whereIn('job', ['screener', 'backtest', 'swing', 'swing-check', 'screener-watch'])
     ->middleware('throttle:10,1')
     ->name('background.start');
 Route::get('/api/{job}-status', [BackgroundRunController::class, 'status'])
-    ->whereIn('job', ['screener', 'backtest', 'swing'])
+    ->whereIn('job', ['screener', 'backtest', 'swing', 'swing-check', 'screener-watch'])
     ->name('background.status');
 
 
