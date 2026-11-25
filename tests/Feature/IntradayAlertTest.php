@@ -3,9 +3,9 @@
 namespace Tests\Feature;
 
 use App\Models\IntradayAlert;
-use App\Models\ScreenerResult;
-use App\Models\StrategyStat;
+use App\Models\IntradayPick;
 use App\Services\IntradayAlertService;
+use App\Services\NseService;
 use App\Services\StockDataService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
@@ -19,6 +19,8 @@ class IntradayAlertTest extends TestCase
     protected array $candles = [];
 
     protected array $asked = [];
+
+    protected bool $tradingDay = true;
 
     protected function setUp(): void
     {
@@ -35,6 +37,7 @@ class IntradayAlertTest extends TestCase
             return $this->candles[$symbol] ?? $this->candles['*'] ?? null;
         });
         $this->candles['*'] = $this->rising();
+        $this->mock(NseService::class)->shouldReceive('isTradingDay')->andReturnUsing(fn () => $this->tradingDay);
     }
 
     protected function tearDown(): void
@@ -69,16 +72,10 @@ class IntradayAlertTest extends TestCase
         }, $candles);
     }
 
-    protected function found(string $symbol, array $strategies = ['High Momentum', 'Volume Breakout'], string $signal = 'BUY', string $date = '2026-11-25'): void
+    protected function picked(string $symbol, string $kind = 'signal', string $date = '2026-11-25'): void
     {
-        foreach ($strategies as $strategy) {
-            ScreenerResult::create(['symbol' => $symbol, 'strategy' => $strategy, 'signal' => $signal, 'entry' => 500, 'stop_loss' => 490, 'target' => 520, 'volume_surge' => true, 'scan_date' => $date]);
-        }
-    }
-
-    protected function stat(string $strategy, float $expectancy): void
-    {
-        StrategyStat::create(['strategy' => $strategy, 'trades' => 500, 'wins' => 300, 'win_rate' => 60, 'expectancy_r' => $expectancy]);
+        IntradayPick::create(['pick_date' => $date, 'kind' => $kind, 'position' => IntradayPick::count() + 1, 'symbol' => $symbol,
+            'close' => 500, 'return_60' => 24.4, 'return_3' => -2.31]);
     }
 
     protected function watch(): array
@@ -94,24 +91,24 @@ class IntradayAlertTest extends TestCase
 
     public function test_a_buyable_stock_is_sent_with_everything_needed(): void
     {
-        $this->found('TCS');
+        $this->picked('TCS');
 
         $this->assertSame(['TCS'], $this->watch()['sent']);
 
         $alert = IntradayAlert::first();
         $text = $this->messages()[0];
-        $this->assertStringContainsString("🟢 INTRADAY BUY TCS x{$alert->quantity}", $text);
+        $this->assertStringContainsString("🟢 PRACTICE BUY TCS x{$alert->quantity}", $text);
         $this->assertStringContainsString('Price ₹502.95 at 10:25', $text);
         $this->assertStringContainsString('Stop ₹' . number_format($alert->stop_loss, 2) . ' · Target ₹' . number_format($alert->target, 2), $text);
         $this->assertStringContainsString('Sell by 15:15', $text);
-        $this->assertStringContainsString('High Momentum, Volume Breakout', $text);
+        $this->assertStringContainsString('strong stock (+24% in 60 days) after a small dip (-2.3% in 3 days)', $text);
         $this->assertLessThan($alert->entry, $alert->stop_loss);
         $this->assertGreaterThan($alert->entry, $alert->target);
     }
 
     public function test_the_highest_price_still_pays_one_and_a_half_times_the_risk(): void
     {
-        $this->found('TCS');
+        $this->picked('TCS');
         $this->watch();
         $a = IntradayAlert::first();
 
@@ -122,7 +119,7 @@ class IntradayAlertTest extends TestCase
 
     public function test_the_money_at_risk_stays_inside_the_limit_per_trade(): void
     {
-        $this->found('TCS');
+        $this->picked('TCS');
         $this->watch();
         $a = IntradayAlert::first();
 
@@ -132,56 +129,51 @@ class IntradayAlertTest extends TestCase
 
     public function test_a_stock_is_announced_once_a_day(): void
     {
-        $this->found('TCS');
+        $this->picked('TCS');
         $this->watch();
         $this->assertSame([], $this->watch()['sent']);
         $this->assertCount(1, $this->messages());
+        $this->assertSame(['TCS'], $this->asked, 'prices were downloaded for a stock already announced');
     }
 
-    public function test_no_more_than_the_daily_limit_is_sent(): void
+    public function test_every_pick_is_watched_and_nothing_else(): void
     {
-        foreach (range(1, 8) as $i) {
-            $this->found("S{$i}");
+        foreach (range(1, 5) as $n) {
+            $this->picked("S{$n}");
         }
+        $this->picked('OLD', date: '2026-11-24');
 
-        $this->assertCount(5, $this->watch()['sent']);
-        $this->assertStringContainsString('limit', $this->watch()['reason']);
-        $this->assertCount(5, $this->messages());
+        $this->assertSame(['S1', 'S2', 'S3', 'S4', 'S5'], $this->watch()['sent']);
+        $this->assertNotContains('OLD', $this->asked);
     }
 
-    public function test_the_strongest_agreement_goes_first(): void
+    public function test_random_stocks_are_logged_by_the_same_rule_without_a_message(): void
     {
-        config(['screener.alerts.max_per_day' => 1]);
-        $this->found('WEAK');
-        $this->found('STRONG', ['High Momentum', 'Volume Breakout', 'MACD Crossover']);
+        $this->picked('TCS');
+        $this->picked('RAND', 'random');
 
-        $this->assertSame(['STRONG'], $this->watch()['sent']);
+        $this->assertSame(['TCS'], $this->watch()['sent']);
+        $this->assertCount(1, $this->messages());
+
+        [$signal, $random] = [IntradayAlert::firstWhere('symbol', 'TCS'), IntradayAlert::firstWhere('symbol', 'RAND')];
+        $this->assertSame('random', $random->kind);
+        foreach (['entry', 'stop_loss', 'target', 'quantity', 'candle_at'] as $field) {
+            $this->assertSame($signal->$field, $random->$field, $field);
+        }
     }
 
-    public function test_sells_lone_signals_disagreement_and_old_scans_are_ignored(): void
+    public function test_random_trades_are_closed_without_a_message(): void
     {
-        $this->found('SHORT', signal: 'SELL (short)');
-        $this->found('LONELY', ['High Momentum']);
-        $this->found('SPLIT');
-        $this->found('SPLIT', ['RSI Reversal'], 'SELL (short)');
-        $this->found('OLD', date: '2026-11-24');
+        $this->alert(['kind' => 'random']);
+        $this->bars([['10:30', 500, 521, 499, 520]]);
 
-        $result = $this->watch();
-        $this->assertSame([], $result['sent']);
-        $this->assertSame([], $this->asked, 'prices were downloaded for stocks that could never qualify');
-    }
-
-    /** Its entry was a price earlier in the day, so it cannot be a vote for buying now. */
-    public function test_an_opening_range_breakout_is_not_a_vote(): void
-    {
-        $this->found('TCS', ['High Momentum', 'ORB + VWAP Breakout']);
-
-        $this->assertSame([], $this->watch()['sent']);
+        $this->assertSame('TARGET', $this->follow()->status);
+        $this->assertSame([], $this->messages());
     }
 
     public function test_a_stock_below_its_averages_is_not_sent(): void
     {
-        $this->found('TCS');
+        $this->picked('TCS');
         $this->candles['*'] = $this->rising(step: -0.05);
 
         $this->assertSame([], $this->watch()['sent']);
@@ -189,7 +181,7 @@ class IntradayAlertTest extends TestCase
 
     public function test_a_stock_without_volume_is_not_sent(): void
     {
-        $this->found('TCS');
+        $this->picked('TCS');
         $this->candles['*'] = $this->rising(lastVolume: 100);
 
         $this->assertSame([], $this->watch()['sent']);
@@ -198,7 +190,7 @@ class IntradayAlertTest extends TestCase
     /** The feed can lag; an old price is not one that can still be had. */
     public function test_an_old_price_is_not_sent(): void
     {
-        $this->found('TCS');
+        $this->picked('TCS');
         $this->candles['*'] = $this->rising('2026-11-25 10:05');
 
         $this->assertSame([], $this->watch()['sent']);
@@ -206,8 +198,8 @@ class IntradayAlertTest extends TestCase
 
     public function test_a_stock_whose_prices_cannot_be_read_is_skipped(): void
     {
-        $this->found('DEAD', ['High Momentum', 'Volume Breakout', 'MACD Crossover']);
-        $this->found('TCS');
+        $this->picked('DEAD');
+        $this->picked('TCS');
         $this->candles['DEAD'] = [];
 
         $this->assertSame(['TCS'], $this->watch()['sent']);
@@ -215,7 +207,7 @@ class IntradayAlertTest extends TestCase
 
     public function test_nothing_is_sent_outside_the_alert_hours(): void
     {
-        $this->found('TCS');
+        $this->picked('TCS');
 
         foreach (['2026-11-25 09:29', '2026-11-25 15:00', '2026-11-28 10:30'] as $time) {
             $this->at($time);
@@ -225,13 +217,17 @@ class IntradayAlertTest extends TestCase
         $this->assertSame([], $this->asked);
     }
 
-    public function test_every_buy_message_carries_the_test_result(): void
+    public function test_every_message_says_practice(): void
     {
-        $this->found('TCS');
+        $this->picked('TCS');
         $this->watch();
 
-        $this->assertStringContainsString('LOST MONEY IN TESTING', $this->messages()[0]);
-        $this->assertFalse(IntradayAlert::first()->tested);
+        $this->bars([['10:30', 500, 900, 499, 520]]);
+        $this->follow();
+
+        $this->assertCount(2, $this->messages());
+        $this->assertStringContainsString('⚠️ PRACTICE — no real money', $this->messages()[0]);
+        $this->assertStringContainsString('PRACTICE EXIT', $this->messages()[1]);
     }
 
     public function test_alerts_are_off_unless_asked_for(): void
@@ -239,7 +235,7 @@ class IntradayAlertTest extends TestCase
         $this->assertFalse((require config_path('screener.php'))['alerts']['enabled']);
 
         config(['screener.alerts.enabled' => false]);
-        $this->found('TCS');
+        $this->picked('TCS');
 
         $this->assertSame([], $this->watch()['sent']);
         $this->artisan('screener:watch')->assertSuccessful();
@@ -255,23 +251,11 @@ class IntradayAlertTest extends TestCase
         $this->artisan('screener:watch')->expectsOutputToContain('Exit alert(s) sent: TCS');
     }
 
-    public function test_after_a_backtest_only_strategies_that_passed_it_count(): void
-    {
-        $this->stat('High Momentum', 0.2);
-        $this->stat('Volume Breakout', -0.2);
-        $this->stat('MACD Crossover', 0.1);
-        $this->found('FAILS');
-        $this->found('PASSES', ['High Momentum', 'MACD Crossover']);
-
-        $this->assertSame(['PASSES'], $this->watch()['sent']);
-        $this->assertTrue(IntradayAlert::first()->tested);
-    }
-
     public function test_an_undelivered_alert_is_tried_again(): void
     {
         Http::swap(new \Illuminate\Http\Client\Factory);
         Http::fake(['api.telegram.org/*' => Http::sequence()->push(['ok' => false], 500)->push(['ok' => true])]);
-        $this->found('TCS');
+        $this->picked('TCS');
 
         $this->assertSame([], $this->watch()['sent']);
         $this->assertSame(0, IntradayAlert::count());
@@ -281,24 +265,96 @@ class IntradayAlertTest extends TestCase
     public function test_nothing_is_downloaded_until_telegram_is_set_up(): void
     {
         config(['services.telegram.token' => null]);
-        $this->found('TCS');
+        $this->picked('TCS');
 
         $this->assertSame([], $this->watch()['sent']);
         $this->assertSame([], $this->asked);
     }
 
-    public function test_a_day_without_a_morning_scan_is_reported_once(): void
+    public function test_a_day_without_picks_is_reported_once(): void
     {
         $this->artisan('screener:watch')->assertSuccessful();
         $this->artisan('screener:watch')->assertSuccessful();
 
         $this->assertCount(1, $this->messages());
-        $this->assertStringContainsString('no results today', $this->messages()[0]);
+        $this->assertStringContainsString('no stocks were picked today', $this->messages()[0]);
+    }
+
+    public function test_a_market_holiday_is_not_reported_as_missing_picks(): void
+    {
+        $this->tradingDay = false;
+        $this->artisan('screener:watch')->assertSuccessful();
+
+        $this->assertSame([], $this->messages());
+    }
+
+    public function test_the_day_result_is_sent_once_after_the_close(): void
+    {
+        $this->picked('TCS');
+        $this->alert(['status' => 'TARGET', 'net_pnl' => 1800, 'r_multiple' => 1.8, 'exit_alerted' => true]);
+        $this->alert(['symbol' => 'RAND', 'kind' => 'random', 'status' => 'STOP', 'net_pnl' => -1100, 'r_multiple' => -1.1]);
+
+        $this->at('2026-11-25 15:29');
+        $this->artisan('screener:watch');
+        $this->assertSame([], $this->messages());
+
+        $this->at('2026-11-25 15:30');
+        $this->artisan('screener:watch');
+        $this->artisan('screener:watch');
+
+        $this->assertCount(1, $this->messages());
+        $text = $this->messages()[0];
+        $this->assertStringContainsString('📊 PRACTICE RESULT — 25 Nov 2026', $text);
+        $this->assertStringContainsString('Our picks: 1 trade(s), 1 won, +₹1,800 after charges', $text);
+        $this->assertStringContainsString('Random stocks: 1 trade(s), 0 won, −₹1,100 after charges', $text);
+        $this->assertStringContainsString('Too early to judge: 1 of 10 weeks.', $text);
+    }
+
+    /** A holiday has no result to report. */
+    public function test_a_day_without_picks_has_no_day_result(): void
+    {
+        $this->at('2026-11-25 15:30');
+        $this->artisan('screener:watch');
+
+        $this->assertSame([], $this->messages());
+    }
+
+    public function test_missing_picks_are_not_reported_while_practice_is_off(): void
+    {
+        config(['screener.alerts.enabled' => false]);
+        $this->artisan('screener:watch');
+
+        $this->assertSame([], $this->messages());
+    }
+
+    public function test_an_undelivered_day_result_is_sent_next_time(): void
+    {
+        Http::swap(new \Illuminate\Http\Client\Factory);
+        Http::fake(['api.telegram.org/*' => Http::sequence()->push(['ok' => false], 500)->push(['ok' => true])]);
+        $this->picked('TCS');
+        $this->at('2026-11-25 15:30');
+
+        $this->artisan('screener:watch');
+        $this->artisan('screener:watch');
+        $this->artisan('screener:watch');
+        $this->assertCount(2, $this->messages());
+    }
+
+    public function test_the_day_result_says_when_a_trade_could_not_be_closed(): void
+    {
+        $this->picked('TCS');
+        $this->alert();
+        $this->candles['*'] = [];
+        $this->at('2026-11-25 15:30');
+        $this->artisan('screener:watch');
+
+        $this->assertStringContainsString('1 trade(s) not closed yet', $this->messages()[0]);
+        $this->assertStringContainsString('Our picks: no trade', $this->messages()[0]);
     }
 
     public function test_the_command_sends_and_needs_the_token_from_the_web(): void
     {
-        $this->found('TCS');
+        $this->picked('TCS');
         $this->artisan('screener:watch')->expectsOutputToContain('1 alert(s) sent: TCS')->assertSuccessful();
 
         config(['screener.backtest_token' => 'right']);
@@ -313,7 +369,7 @@ class IntradayAlertTest extends TestCase
         $at = Carbon::parse('2026-11-25 10:25', 'Asia/Kolkata')->timestamp;
 
         return IntradayAlert::create($o + ['alert_date' => '2026-11-25', 'symbol' => 'TCS', 'price_time' => '10:25', 'entry' => 500, 'max_entry' => 502, 'stop_loss' => 490,
-            'target' => 520, 'quantity' => 100, 'strategies' => ['High Momentum'], 'tested' => false, 'candle_at' => $at, 'seen_low' => 499, 'seen_high' => 501, 'status' => 'OPEN']);
+            'target' => 520, 'quantity' => 100, 'reason' => 'test', 'candle_at' => $at, 'seen_low' => 499, 'seen_high' => 501, 'status' => 'OPEN']);
     }
 
     /** @param array<int, array{0: string, 1: float, 2: float, 3: float, 4: float}> $bars time, open, high, low, close */
@@ -351,8 +407,8 @@ class IntradayAlertTest extends TestCase
         $this->assertGreaterThan(1.7, $closed->r_multiple);
         $this->assertLessThan(2.0, $closed->r_multiple);
         $this->assertCount(1, $this->messages());
-        $this->assertStringContainsString('🟢 EXIT TCS — target reached', $this->messages()[0]);
-        $this->assertStringContainsString('Result if taken: +₹', $this->messages()[0]);
+        $this->assertStringContainsString('🟢 PRACTICE EXIT TCS — target reached', $this->messages()[0]);
+        $this->assertStringContainsString('Practice result: +₹', $this->messages()[0]);
     }
 
     public function test_reaching_the_stop_sends_an_exit(): void
@@ -364,7 +420,7 @@ class IntradayAlertTest extends TestCase
         $this->assertSame('STOP', $closed->status);
         $this->assertEqualsWithDelta(490 * 0.9995, $closed->exit_price, 0.01);
         $this->assertLessThan(-1.0, $closed->r_multiple);
-        $this->assertStringContainsString('🔴 EXIT TCS — stop reached', $this->messages()[0]);
+        $this->assertStringContainsString('🔴 PRACTICE EXIT TCS — stop reached', $this->messages()[0]);
         $this->assertStringContainsString('−₹', $this->messages()[0]);
     }
 
@@ -407,7 +463,7 @@ class IntradayAlertTest extends TestCase
         $closed = $this->follow();
         $this->assertSame(['TIME', '15:15'], [$closed->status, $closed->exit_time]);
         $this->assertEqualsWithDelta(506 * 0.9995, $closed->exit_price, 0.01);
-        $this->assertStringContainsString('⏰ EXIT TCS — 15:15', $this->messages()[0]);
+        $this->assertStringContainsString('⏰ PRACTICE EXIT TCS — 15:15', $this->messages()[0]);
     }
 
     public function test_an_exit_that_could_not_be_delivered_is_sent_next_time(): void
@@ -433,7 +489,7 @@ class IntradayAlertTest extends TestCase
 
     public function test_the_buy_message_says_when_not_to_buy(): void
     {
-        $this->found('TCS');
+        $this->picked('TCS');
         $this->watch();
 
         $this->assertStringContainsString('Do not buy', $this->messages()[0]);
@@ -451,7 +507,7 @@ class IntradayAlertTest extends TestCase
     /** Two runs looking at the same stock at once must not both announce it. */
     public function test_an_alert_another_run_has_just_claimed_is_not_sent_again(): void
     {
-        $this->found('TCS');
+        $this->picked('TCS');
         $this->mock(StockDataService::class)->shouldReceive('getIntradayCandles')->andReturnUsing(function () {
             $this->alert();
 

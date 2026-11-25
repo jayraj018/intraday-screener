@@ -94,23 +94,47 @@ return [
         'square_off_at' => '15:15',
     ],
 
-    // Telegram BUY alerts (`php artisan screener:watch`, every few minutes in the session)
+    // Intraday practice (`screener:picks` before the open, `screener:watch` every few minutes,
+    // `intraday:store` after the close). Off unless asked for, and practice only: no version of
+    // it has made money on past prices.
     //
-    // Off unless asked for: replayed over 56 sessions to 23 Nov 2026 on today's index members,
-    // after costs, the rule lost on 262 alerts and did no better than random liquid stocks.
-    //
-    //   alerts          34.7% wins, -0.26R per trade (95% range -0.41 to -0.12)
-    //   random stocks   36.6% wins, -0.20R per trade
+    //   entry rule, 56 sessions to 23 Nov 2026    -0.26R per trade; random stocks -0.20R
+    //   picking rule, 5 years, open to close      -0.31% to -0.37% per trade; any stock -0.29% to -0.33%
     'alerts' => [
         'enabled' => (bool) env('INTRADAY_ALERTS', false),
-        'test_result' => '262 past alerts: 35% won, average loss ₹261 per ₹1,000 risked',
 
+        'picks' => 5,             // and as many random stocks, for comparison
+        'min_stocks' => 100,      // fewer with fresh prices than this is a failed scan
         'start' => '09:30',       // VWAP means little in the first candles
-        'max_per_day' => 5,
-        'max_watched' => 15,      // each one is a download on every run
+        'summary_after' => '15:30',
 
         // "Not above" is the price where the target still pays this many times the risk
         'min_risk_reward' => 1.5,
+
+        // Weeks of results before anything is concluded from them
+        'min_weeks' => 10,
+
+        // The picking rule. Tested as written; changing it needs a new test.
+        'rule' => [
+            'top_share' => 0.30,          // of all liquid stocks, by 60-day return
+            'dip_min' => -6.0,            // 3-day return, percent
+            'dip_max' => -1.0,
+        ],
+
+        // A company that reported one of these since the last session is left out, good news or
+        // bad: nobody can say how it will trade. Parts of the exchange's category names...
+        'risky_categories' => [
+            'board meeting', 'financial', 'orders passed', 'litigation', 'insolvency', 'resignation', 'cessation', 'auditor',
+            'rating- revision', 'forensic', 'disruption', 'closure', 'rumour', 'price movement', 'spurt in volume', 'clarification',
+            'demise', 'cancellation', 'termination', 'material issue', 'fraud', 'default', 'change in management', 'merger',
+            'demerger', 'scheme of arrangement', 'open offer', 'buyback', 'bonus', 'rights issue', 'preferential', 'qualified institutional',
+        ],
+
+        // ...or whole words in the text, for what is filed under "Updates"
+        'risky_words' => [
+            'fraud', 'default', 'defaulted', 'raid', 'penalty', 'show cause', 'search and seizure', 'arrest', 'arrested', 'fire', 'explosion',
+            'accident', 'shutdown', 'strike', 'downgrade', 'downgraded', 'insolvency', 'financial results',
+        ],
     ],
 
     // How the backtest assumes a signal is filled.

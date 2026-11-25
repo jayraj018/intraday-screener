@@ -83,6 +83,58 @@ class NseService
     }
 
     /**
+     * What listed companies told the exchange between two dates, or null when it could not be
+     * read — which is not the same as there being no news.
+     *
+     * @return ?array<int, array{symbol: string, category: string, text: string}>
+     */
+    public function announcements(CarbonInterface $from, CarbonInterface $to): ?array
+    {
+        $key = 'nse.announcements.' . $from->toDateString() . '.' . $to->toDateString();
+
+        return $this->remember($key, now()->addMinutes(10), function () use ($from, $to) {
+            $response = Http::withHeaders($this->headers)->timeout(30)->retry(2, 500, throw: false)
+                ->get('https://www.nseindia.com/api/corporate-announcements', [
+                    'index' => 'equities',
+                    'from_date' => $from->format('d-m-Y'),
+                    'to_date' => $to->format('d-m-Y'),
+                ]);
+
+            // A day on which no company says anything does not happen: nothing means blocked
+            if (! $response->successful() || ! is_array($response->json()) || ! $response->json()) {
+                return null;
+            }
+
+            return collect($response->json())->map(fn ($row) => [
+                'symbol' => strtoupper($row['symbol'] ?? ''),
+                'category' => (string) ($row['desc'] ?? ''),
+                'text' => mb_substr((string) ($row['attchmntText'] ?? ''), 0, 300),
+            ])->all();
+        });
+    }
+
+    /** Weekends and the exchange's published holidays. An unreadable list counts as open. */
+    public function isTradingDay(CarbonInterface $day): bool
+    {
+        if ($day->isWeekend()) {
+            return false;
+        }
+
+        $holidays = $this->remember('nse.holidays.' . $day->year, now()->addWeek(), function () {
+            $response = Http::withHeaders($this->headers)->timeout(20)->retry(2, 500, throw: false)
+                ->get('https://www.nseindia.com/api/holiday-master', ['type' => 'trading']);
+
+            $rows = $response->successful() ? $response->json('CM') : null;
+
+            return $rows
+                ? array_map(fn ($row) => Carbon::createFromFormat('d-M-Y', $row['tradingDate'])->toDateString(), $rows)
+                : null;
+        }) ?? [];
+
+        return ! in_array($day->toDateString(), $holidays, true);
+    }
+
+    /**
      * Cache a successful fetch, and keep the last good copy so a refused request (NSE's
      * bot protection blocks one now and then) serves slightly old data instead of nothing.
      */

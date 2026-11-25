@@ -6,6 +6,9 @@ use Illuminate\Database\Eloquent\Model;
 
 class IntradayAlert extends Model
 {
+    public const SIGNAL = 'signal';
+    public const RANDOM = 'random';
+
     protected $guarded = [];
 
     protected $casts = [
@@ -13,8 +16,7 @@ class IntradayAlert extends Model
         'max_entry' => 'float',
         'stop_loss' => 'float',
         'target' => 'float',
-        'strategies' => 'array',
-        'tested' => 'boolean',
+        'quantity' => 'integer',
         'candle_at' => 'integer',
         'seen_low' => 'float',
         'seen_high' => 'float',
@@ -23,4 +25,9 @@ class IntradayAlert extends Model
         'r_multiple' => 'float',
         'exit_alerted' => 'boolean',
     ];
+
+    public function day(): string
+    {
+        return substr($this->alert_date, 0, 10);
+    }
 }

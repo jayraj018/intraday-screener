@@ -6,12 +6,13 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
-    /** One BUY alert per stock per day, with the levels exactly as they were sent, and how it ended. */
+    /** One practice trade per stock per day, with the levels exactly as they were sent, and how it ended. */
     public function up(): void
     {
         Schema::create('intraday_alerts', function (Blueprint $table) {
             $table->id();
             $table->date('alert_date');
+            $table->string('kind', 8)->default('signal');    // signal (sent) | random (comparison, never sent)
             $table->string('symbol', 32);
             $table->string('price_time', 8);      // IST time of the candle the price came from
             $table->decimal('entry', 12, 2);
@@ -19,8 +20,7 @@ return new class extends Migration
             $table->decimal('stop_loss', 12, 2);
             $table->decimal('target', 12, 2);
             $table->unsignedInteger('quantity');
-            $table->jsonb('strategies');
-            $table->boolean('tested');
+            $table->string('reason', 200)->default('');
 
             // The candle the alert was sent in, and how far it had already travelled: only
             // what it did after that can have closed the trade.

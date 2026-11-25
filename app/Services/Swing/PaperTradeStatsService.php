@@ -3,6 +3,7 @@
 namespace App\Services\Swing;
 
 use App\Models\SwingPaperTrade;
+use App\Services\ClusteredMean;
 use Illuminate\Support\Collection;
 
 /**
@@ -90,17 +91,9 @@ class PaperTradeStatsService
      */
     protected function range(Collection $closed): ?array
     {
-        $weeks = $closed->groupBy(fn ($t) => $t->signal_date->format('o-W'));
-        $g = $weeks->count();
-
-        if ($g < config('swing.paper.min_weeks')) {
-            return null;
-        }
-
-        $mean = $closed->avg('r_multiple');
-        $squares = $weeks->sum(fn ($week) => $week->sum(fn ($t) => $t->r_multiple - $mean) ** 2);
-        $error = sqrt($squares * $g / ($g - 1)) / $closed->count();
-
-        return [round($mean - 1.96 * $error, 3), round($mean + 1.96 * $error, 3)];
+        return ClusteredMean::range(
+            $closed->groupBy(fn ($t) => $t->signal_date->format('o-W'))->map->pluck('r_multiple'),
+            config('swing.paper.min_weeks'),
+        );
     }
 }

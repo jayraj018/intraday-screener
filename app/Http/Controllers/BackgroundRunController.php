@@ -3,9 +3,11 @@
 namespace App\Http\Controllers;
 
 use App\Console\Commands\CheckSwingScan;
+use App\Console\Commands\PickIntraday;
 use App\Console\Commands\RunBacktest;
 use App\Console\Commands\RunMorningScreener;
 use App\Console\Commands\RunSwingScan;
+use App\Console\Commands\StoreIntradayBars;
 use App\Console\Commands\WatchIntraday;
 use App\Models\ScreenerResult;
 use App\Models\StrategyStat;
@@ -36,6 +38,8 @@ class BackgroundRunController extends Controller
         'backtest' => ['command' => 'screener:backtest', 'status_key' => RunBacktest::STATUS_CACHE_KEY],
         'swing' => ['command' => 'swing:scan', 'status_key' => RunSwingScan::STATUS_CACHE_KEY],
         'swing-check' => ['command' => 'swing:check', 'status_key' => CheckSwingScan::STATUS_CACHE_KEY],
+        'screener-picks' => ['command' => 'screener:picks', 'status_key' => PickIntraday::STATUS_CACHE_KEY],
+        'intraday-store' => ['command' => 'intraday:store', 'status_key' => StoreIntradayBars::STATUS_CACHE_KEY],
         'screener-watch' => ['command' => 'screener:watch', 'status_key' => WatchIntraday::STATUS_CACHE_KEY],
     ];
 
@@ -82,7 +86,7 @@ class BackgroundRunController extends Controller
         return ['run' => Cache::get(self::JOBS[$job]['status_key'], ['state' => 'never_run'])] + match ($job) {
             'screener' => ['setups_today' => ScreenerResult::where('scan_date', now()->toDateString())->count()],
             'backtest' => ['strategies_saved' => StrategyStat::count(), 'last_saved_at' => StrategyStat::max('updated_at')],
-            'swing-check', 'screener-watch' => [],
+            'swing-check', 'screener-picks', 'screener-watch', 'intraday-store' => [],
             'swing' => ['signals_today' => SwingSignal::where('scan_date', now('Asia/Kolkata')->toDateString())->count(), 'last_scan_date' => SwingSignal::max('scan_date')],
         };
     }

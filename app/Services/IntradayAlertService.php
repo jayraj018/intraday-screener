@@ -3,18 +3,18 @@
 namespace App\Services;
 
 use App\Models\IntradayAlert;
-use App\Models\ScreenerResult;
-use App\Models\StrategyStat;
+use App\Models\IntradayPick;
 use Illuminate\Support\Carbon;
-use Illuminate\Support\Collection;
 
 /**
- * Watches the morning scan's BUY stocks during the session: one message when a stock can be
+ * Watches the day's practice stocks during the session: one message when a stock can be
  * bought at the price it is trading at now, and one when that trade reaches its stop, its
- * target or the square-off time. Longs only.
+ * target or the square-off time. Longs only, and no money.
  *
- * It sees prices once per run, so it can be minutes behind. A stop order with the broker is
- * the protection; the exit message is the record of it.
+ * The random stocks go through the same entry and exit rules without a message, so that the
+ * picks can be compared with no picking at all.
+ *
+ * It sees prices once per run, so it can be minutes behind.
  */
 class IntradayAlertService
 {
@@ -26,6 +26,7 @@ class IntradayAlertService
         protected StockDataService $data,
         protected TradeCostService $costs,
         protected TelegramService $telegram,
+        protected IntradayPickService $picks,
     ) {
     }
 
@@ -60,27 +61,17 @@ class IntradayAlertService
         }
 
         $already = IntradayAlert::where('alert_date', $today)->pluck('symbol');
-        $room = config('screener.alerts.max_per_day') - $already->count();
+        $waiting = $this->picks->today()->whereNotIn('symbol', $already);
 
-        if ($room <= 0) {
-            return ['watched' => 0, 'sent' => [], 'reason' => 'Today\'s alert limit has been reached.'];
-        }
+        foreach ($waiting as $pick) {
+            $alert = $this->alertFor($pick, $today);
 
-        $candidates = $this->candidates($today)->whereNotIn('symbol', $already)->take(config('screener.alerts.max_watched'));
-
-        foreach ($candidates as $candidate) {
-            if (count($sent) >= $room) {
-                break;
-            }
-
-            $alert = $this->alertFor($candidate, $today);
-
-            if ($alert && $this->deliver($alert)) {
-                $sent[] = $candidate['symbol'];
+            if ($alert && $this->deliver($alert) && $alert->kind === IntradayAlert::SIGNAL) {
+                $sent[] = $pick->symbol;
             }
         }
 
-        return ['watched' => $candidates->count(), 'sent' => $sent, 'reason' => $candidates->isEmpty() ? 'No stock qualifies today.' : null];
+        return ['watched' => $waiting->where('kind', IntradayAlert::SIGNAL)->count(), 'sent' => $sent, 'reason' => null];
     }
 
     /**
@@ -91,16 +82,18 @@ class IntradayAlertService
     public function follow(): array
     {
         // Five days is as far back as the 5-minute prices go
-        $open = IntradayAlert::where('status', 'OPEN')->where('alert_date', '>=', now('Asia/Kolkata')->subDays(5)->toDateString());
+        $since = now('Asia/Kolkata')->subDays(5)->toDateString();
 
-        foreach ($open->get() as $alert) {
+        foreach (IntradayAlert::where('status', 'OPEN')->where('alert_date', '>=', $since)->get() as $alert) {
             $this->resolve($alert);
         }
 
         $sent = [];
 
         // Kept apart from resolving, so an exit that could not be delivered is sent next time
-        foreach (IntradayAlert::where('status', '!=', 'OPEN')->get()->reject->exit_alerted as $alert) {
+        $closed = IntradayAlert::where('kind', IntradayAlert::SIGNAL)->where('status', '!=', 'OPEN')->where('alert_date', '>=', $since);
+
+        foreach ($closed->get()->reject->exit_alerted as $alert) {
             if ($this->telegram->send($this->exitMessage($alert))) {
                 $alert->update(['exit_alerted' => true]);
                 $sent[] = $alert->symbol;
@@ -112,8 +105,7 @@ class IntradayAlertService
 
     protected function resolve(IntradayAlert $alert): void
     {
-        $day = substr($alert->alert_date, 0, 10);
-        $squareOff = Carbon::parse($day . ' ' . config('screener.live.square_off_at'), 'Asia/Kolkata');
+        $squareOff = Carbon::parse($alert->day() . ' ' . config('screener.live.square_off_at'), 'Asia/Kolkata');
         $last = null;
 
         foreach ($this->data->getIntradayCandles($alert->symbol, '5d') ?? [] as $candle) {
@@ -158,42 +150,9 @@ class IntradayAlertService
         ]);
     }
 
-    /**
-     * Stocks enough strategies call a BUY and none calls a SELL, strongest first.
-     *
-     * Once a backtest has been recorded only the strategies it passed get a vote, as on the
-     * dashboard. Before that nothing has been tested, so all of them do and the message says
-     * so. ORB is left out: its entry was taken at a price that has already gone.
-     *
-     * @return Collection<int, array{symbol: string, strategies: array<int, string>, tested: bool, surge: bool}>
-     */
-    public function candidates(string $today): Collection
+    protected function alertFor(IntradayPick $pick, string $today): ?IntradayAlert
     {
-        $stats = StrategyStat::all();
-        $tested = $stats->isNotEmpty();
-        $qualified = $stats->filter->qualifies()->pluck('strategy');
-        $results = ScreenerResult::whereDate('scan_date', $today)->get();
-        $shorted = $results->reject(fn ($r) => str_contains($r->signal, 'BUY'))->pluck('symbol')->unique();
-
-        return $results
-            ->filter(fn ($r) => str_contains($r->signal, 'BUY') && $r->strategy !== 'ORB + VWAP Breakout')
-            ->filter(fn ($r) => ! $tested || $qualified->contains($r->strategy))
-            ->whereNotIn('symbol', $shorted)
-            ->groupBy('symbol')
-            ->map(fn ($rows, $symbol) => [
-                'symbol' => (string) $symbol,
-                'strategies' => $rows->pluck('strategy')->unique()->values()->all(),
-                'tested' => $tested,
-                'surge' => $rows->contains('volume_surge', true),
-            ])
-            ->filter(fn ($c) => count($c['strategies']) >= config('screener.min_strategies_agree'))
-            ->sortByDesc(fn ($c) => [count($c['strategies']), $c['surge']])
-            ->values();
-    }
-
-    protected function alertFor(array $candidate, string $today): ?IntradayAlert
-    {
-        $candles = $this->data->getIntradayCandles($candidate['symbol'], '5d') ?? [];
+        $candles = $this->data->getIntradayCandles($pick->symbol, '5d') ?? [];
         $latest = end($candles);
 
         if (! $latest || Carbon::createFromTimestamp($latest['timestamp'])->diffInMinutes(now(), true) > self::MAX_PRICE_AGE_MINUTES) {
@@ -214,15 +173,15 @@ class IntradayAlertService
 
         return new IntradayAlert([
             'alert_date' => $today,
-            'symbol' => $candidate['symbol'],
+            'kind' => $pick->kind,
+            'symbol' => $pick->symbol,
             'price_time' => $decision['as_of'],
             'entry' => $decision['entry'],
             'max_entry' => $this->maxEntry($decision['stop_loss'], $decision['target']),
             'stop_loss' => $decision['stop_loss'],
             'target' => $decision['target'],
             'quantity' => $quantity,
-            'strategies' => $candidate['strategies'],
-            'tested' => $candidate['tested'],
+            'reason' => $pick->kind === IntradayAlert::SIGNAL ? $pick->reason() : 'random stock',
             'candle_at' => $latest['timestamp'],
             'seen_low' => $latest['low'],
             'seen_high' => $latest['high'],
@@ -251,7 +210,7 @@ class IntradayAlertService
             return false;
         }
 
-        if ($this->telegram->send($this->message($alert))) {
+        if ($alert->kind === IntradayAlert::RANDOM || $this->telegram->send($this->message($alert))) {
             return true;
         }
 
@@ -265,29 +224,29 @@ class IntradayAlertService
         $money = fn (float $v) => '₹' . number_format($v, 2);
 
         return implode("\n", [
-            "🟢 INTRADAY BUY {$alert->symbol} x{$alert->quantity}",
+            "🟢 PRACTICE BUY {$alert->symbol} x{$alert->quantity}",
             "Price {$money($alert->entry)} at {$alert->price_time} — not above {$money($alert->max_entry)}",
             "Stop {$money($alert->stop_loss)} · Target {$money($alert->target)}",
             'Already above ' . $money($alert->max_entry) . '? Do not buy. Below the stop? Do not buy.',
             'Sell by ' . config('screener.live.square_off_at') . ' whatever happens.',
-            'Why: ' . implode(', ', $alert->strategies) . '; above VWAP and 20 EMA with volume.',
-            '⚠️ LOST MONEY IN TESTING — ' . config('screener.alerts.test_result') . '. Paper trade only.',
+            "Why: {$alert->reason}; now above VWAP and 20 EMA with volume.",
+            '⚠️ PRACTICE — no real money. These rules lost money when tested on past prices.',
         ]);
     }
 
     protected function exitMessage(IntradayAlert $alert): string
     {
         $headline = match ($alert->status) {
-            'TARGET' => "🟢 EXIT {$alert->symbol} — target reached",
-            'STOP' => "🔴 EXIT {$alert->symbol} — stop reached",
-            default => "⏰ EXIT {$alert->symbol} — {$alert->exit_time}, time to close",
+            'TARGET' => "🟢 PRACTICE EXIT {$alert->symbol} — target reached",
+            'STOP' => "🔴 PRACTICE EXIT {$alert->symbol} — stop reached",
+            default => "⏰ PRACTICE EXIT {$alert->symbol} — {$alert->exit_time}, time to close",
         };
 
         return implode("\n", [
             $headline,
             sprintf('Around ₹%s at %s. Alert price was ₹%s.', number_format($alert->exit_price, 2), $alert->exit_time, number_format($alert->entry, 2)),
-            sprintf('Result if taken: %s₹%s after charges (%+.2fR)', $alert->net_pnl < 0 ? '−' : '+', number_format(abs($alert->net_pnl), 2), $alert->r_multiple),
-            'Still holding it? The plan is finished.',
+            sprintf('Practice result: %s₹%s after charges (%+.2fR)', $alert->net_pnl < 0 ? '−' : '+', number_format(abs($alert->net_pnl), 2), $alert->r_multiple),
+            'This practice trade is finished.',
         ]);
     }
 }
