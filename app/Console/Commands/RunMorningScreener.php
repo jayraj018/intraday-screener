@@ -30,7 +30,10 @@ class RunMorningScreener extends Command implements Isolatable
         $this->info('Running morning screener on ' . $total . ' stocks...');
 
         $done = 0;
-        $results = $screener->run(fn () => $this->recordProgress(++$done, $total));
+        // Not an arrow function: those capture $done by value, so it would never go past 1
+        $results = $screener->run(function () use (&$done, $total) {
+            $this->recordProgress(++$done, $total);
+        });
 
         $today = now()->toDateString();
 

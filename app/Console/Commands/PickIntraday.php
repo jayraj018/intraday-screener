@@ -52,7 +52,10 @@ class PickIntraday extends Command implements Isolatable
         $done = 0;
 
         try {
-            $result = $service->pick(fn (int $total) => $this->recordProgress(++$done, $total));
+            // Not an arrow function: those capture $done by value, so it would never go past 1
+            $result = $service->pick(function (int $total) use (&$done) {
+                $this->recordProgress(++$done, $total);
+            });
         } catch (\RuntimeException $e) {
             $this->reportFailure($e, $telegram, $now->toDateString());
 
