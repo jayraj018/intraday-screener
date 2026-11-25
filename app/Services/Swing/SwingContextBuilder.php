@@ -4,6 +4,7 @@ namespace App\Services\Swing;
 
 use App\Services\IndicatorService;
 use App\Services\ScreenerService;
+use Illuminate\Support\Carbon;
 
 /**
  * Assembles the context a strategy is handed.
@@ -36,7 +37,6 @@ class SwingContextBuilder
         // so relative strength compares two finished windows.
         $daily = $this->screener->completedDailyCandles($daily);
         $benchmark = $this->screener->completedDailyCandles($benchmark);
-        $weekly = $this->completedWeeks($weekly);
 
         // A 200-day trend filter needs 200 days. Below this the indicators return nulls
         // and a strategy would be judging a stock it cannot actually see.
@@ -45,6 +45,7 @@ class SwingContextBuilder
         }
 
         $closes = array_column($daily, 'close');
+        $weekly = $this->completedWeeks($weekly, end($daily)['date']);
 
         return new SwingContext(
             symbol: $symbol,
@@ -61,22 +62,21 @@ class SwingContextBuilder
     }
 
     /**
-     * Weekly bars with the current, unfinished week removed. A week is only a week once
-     * it has closed; judging a trend from two days of it reads the noise as the signal.
+     * Weekly bars that had closed by the decision bar. A week is only a week once it has
+     * finished; judging a trend from two days of it reads the noise as the signal.
+     *
+     * Measured from the decision bar, not from the clock: a weekly bar is dated by its
+     * Monday but holds Friday's close, so replaying a past Wednesday against the clock
+     * would hand the strategy two days it could not have seen.
      */
-    protected function completedWeeks(array $weekly): array
+    protected function completedWeeks(array $weekly, string $decisionDate): array
     {
-        if (! $weekly) {
-            return [];
-        }
+        $decision = Carbon::parse($decisionDate);
+        $cutoff = $decision->dayOfWeekIso >= 5
+            ? $decision->copy()->startOfWeek(Carbon::MONDAY)->addWeek()   // Friday's bar completes its own week
+            : $decision->copy()->startOfWeek(Carbon::MONDAY);
 
-        $weekStart = now('Asia/Kolkata')->startOfWeek()->toDateString();
-
-        if (end($weekly)['date'] >= $weekStart) {
-            array_pop($weekly);
-        }
-
-        return $weekly;
+        return array_values(array_filter($weekly, fn ($bar) => $bar['date'] < $cutoff->toDateString()));
     }
 
     /**

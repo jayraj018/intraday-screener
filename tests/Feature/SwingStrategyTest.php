@@ -5,10 +5,13 @@ namespace Tests\Feature;
 use App\Services\Swing\MarketRegimeService;
 use App\Services\Swing\Strategies\BreakoutVolumeStrategy;
 use App\Services\Swing\Strategies\MaTrendStrategy;
+use App\Services\Swing\Strategies\MomentumContinuationStrategy;
 use App\Services\Swing\Strategies\TrendPullbackStrategy;
 use App\Services\Swing\SwingContext;
 use App\Services\Swing\SwingContextBuilder;
+use App\Services\Swing\SwingScannerService;
 use App\Services\Swing\SwingSignal;
+use App\Services\Swing\SwingStrategy;
 use Tests\TestCase;
 
 class SwingStrategyTest extends TestCase
@@ -63,9 +66,9 @@ class SwingStrategyTest extends TestCase
      * says. A monotonic ramp has no swing highs at all, so it can never produce a tested
      * resistance level — the peaks have to be real.
      *
-     * @param  array{c: float, h?: float, l?: float, v?: int}  $finalBar
+     * @param  array{c: float, h?: float, l?: float, v?: int}  ...$finalBars
      */
-    protected function resistanceContext(array $finalBar): SwingContext
+    protected function resistanceContext(array ...$finalBars): SwingContext
     {
         $prices = [];
 
@@ -99,15 +102,17 @@ class SwingStrategyTest extends TestCase
             ];
         }
 
-        $i = count($daily);
-        $daily[] = [
-            'date' => date('Y-m-d', strtotime("2024-01-01 +{$i} days")),
-            'open' => $finalBar['o'] ?? $finalBar['c'],
-            'high' => $finalBar['h'] ?? $finalBar['c'] + 1,
-            'low' => $finalBar['l'] ?? $finalBar['c'] - 1,
-            'close' => $finalBar['c'],
-            'volume' => $finalBar['v'] ?? 1_000_000,
-        ];
+        foreach ($finalBars as $bar) {
+            $i = count($daily);
+            $daily[] = [
+                'date' => date('Y-m-d', strtotime("2024-01-01 +{$i} days")),
+                'open' => $bar['o'] ?? $bar['c'],
+                'high' => $bar['h'] ?? $bar['c'] + 1,
+                'low' => $bar['l'] ?? $bar['c'] - 1,
+                'close' => $bar['c'],
+                'volume' => $bar['v'] ?? 1_000_000,
+            ];
+        }
 
         $benchmark = array_map(fn ($c, $i) => [
             'date' => $c['date'],
@@ -274,5 +279,154 @@ class SwingStrategyTest extends TestCase
         foreach ([MaTrendStrategy::class, BreakoutVolumeStrategy::class, TrendPullbackStrategy::class] as $class) {
             $this->assertSame(SwingSignal::NO_SETUP, app($class)->evaluate($short)->state);
         }
+    }
+
+    // --------------------------------------------------------- bearish market
+
+    protected function fallingMarket(): callable
+    {
+        return fn ($i) => 400 - $i * 0.8;
+    }
+
+    public function test_ma_trend_does_not_buy_while_nifty_is_falling(): void
+    {
+        $context = $this->context(fn ($i) => 100 + $i * 0.9, benchmarkAt: $this->fallingMarket());
+        $this->assertTrue($context->marketIsBearish());
+
+        $signal = app(MaTrendStrategy::class)->evaluate($context);
+
+        $this->assertSame(SwingSignal::NO_SETUP, $signal->state);
+        $this->assertSame(['Market regime'], array_values(array_column($signal->failedChecks(), 'label')));
+    }
+
+    /** An uptrend that dipped to its 20 EMA, then closed strongly back up. */
+    protected function pullback(?callable $benchmarkAt, float $lastClose = 256.0): SwingContext
+    {
+        return $this->context(fn ($i) => 100 + $i * 0.5 + sin($i / 2) * 5, 320, [
+            ['c' => 258], ['c' => 256], ['c' => 254], ['c' => 255, 'h' => 257, 'l' => 252],
+            ['c' => $lastClose, 'h' => 257, 'l' => 251],
+        ], $benchmarkAt);
+    }
+
+    public function test_a_confirmed_pullback_is_taken_in_a_healthy_market(): void
+    {
+        $signal = app(TrendPullbackStrategy::class)->evaluate($this->pullback(null));
+
+        $this->assertSame(SwingSignal::READY, $signal->state, json_encode($signal->failedChecks()));
+    }
+
+    public function test_a_confirmed_pullback_is_refused_while_nifty_is_falling(): void
+    {
+        $signal = app(TrendPullbackStrategy::class)->evaluate($this->pullback($this->fallingMarket()));
+
+        $this->assertSame(SwingSignal::NO_SETUP, $signal->state);
+        $this->assertSame(['Market regime'], array_values(array_column($signal->failedChecks(), 'label')));
+    }
+
+    /** Waiting for a turn that would be refused anyway is not worth a watchlist row. */
+    public function test_an_unconfirmed_pullback_is_not_watched_while_nifty_is_falling(): void
+    {
+        $unconfirmed = 252.0;   // closes at the bottom of its range
+
+        $this->assertSame(SwingSignal::WATCHLIST,
+            app(TrendPullbackStrategy::class)->evaluate($this->pullback(null, $unconfirmed))->state);
+        $this->assertSame(SwingSignal::NO_SETUP,
+            app(TrendPullbackStrategy::class)->evaluate($this->pullback($this->fallingMarket(), $unconfirmed))->state);
+    }
+
+    // --------------------------------------------------------- fresh breakout
+
+    public function test_the_first_close_above_the_level_is_a_breakout(): void
+    {
+        $signal = app(BreakoutVolumeStrategy::class)->evaluate(
+            $this->resistanceContext(['c' => 153, 'h' => 154, 'l' => 147, 'v' => 3_000_000])
+        );
+
+        $this->assertSame(SwingSignal::READY, $signal->state, json_encode($signal->failedChecks()));
+    }
+
+    public function test_a_level_broken_days_ago_is_not_broken_again(): void
+    {
+        $signal = app(BreakoutVolumeStrategy::class)->evaluate($this->resistanceContext(
+            ['c' => 152, 'h' => 153, 'l' => 147, 'v' => 3_000_000],
+            ['c' => 152.5], ['c' => 153],
+            ['c' => 153.5, 'h' => 154.5, 'l' => 152, 'v' => 3_000_000],
+        ));
+
+        $this->assertNotSame(SwingSignal::READY, $signal->state);
+        $this->assertSame(['Fresh break'], array_values(array_column($signal->failedChecks(), 'label')));
+    }
+
+    // --------------------------------------------------------------- extended
+
+    protected function stretched(int $volume): SwingContext
+    {
+        return $this->context(fn ($i) => 100 + $i * 0.5, 320, array_map(
+            fn ($k) => ['c' => 258 + $k * 9, 'v' => $volume], range(1, 5)
+        ));
+    }
+
+    public function test_a_valid_setup_that_ran_too_far_is_extended(): void
+    {
+        $signal = app(MomentumContinuationStrategy::class)->evaluate($this->stretched(3_000_000));
+
+        $this->assertSame(SwingSignal::EXTENDED, $signal->state);
+        $this->assertSame([], $signal->failedChecks());
+    }
+
+    /** "The move already happened" is a claim that a setup existed. Here none did. */
+    public function test_a_stretched_stock_that_never_qualified_is_not_extended(): void
+    {
+        $signal = app(MomentumContinuationStrategy::class)->evaluate($this->stretched(900_000));
+
+        $this->assertSame(SwingSignal::NO_SETUP, $signal->state);
+        $this->assertNotEmpty($signal->failedChecks());
+    }
+
+    // --------------------------------------------------- disabled and broken plans
+
+    public function test_disabled_strategies_are_left_out_but_can_still_be_measured(): void
+    {
+        $names = fn ($list) => array_map(fn ($s) => $s->name(), $list);
+        $scanner = app(SwingScannerService::class);
+
+        $this->assertNotContains('Breakout Retest', $names($scanner->strategies()));
+        $this->assertNotContains('Volatility Contraction', $names($scanner->strategies()));
+        $this->assertCount(5, $scanner->strategies());
+        $this->assertCount(7, $scanner->allStrategies());
+
+        config(['swing.disabled_strategies' => []]);
+        $this->assertCount(7, $scanner->strategies());
+    }
+
+    /** A typo in the config would silently leave a strategy running. */
+    public function test_every_disabled_name_is_a_real_strategy(): void
+    {
+        $names = array_map(fn ($s) => $s->name(), app(SwingScannerService::class)->allStrategies());
+
+        $this->assertSame([], array_diff(config('swing.disabled_strategies'), $names));
+    }
+
+    public function test_a_stop_above_the_entry_is_not_a_plan(): void
+    {
+        $broken = new class(app(\App\Services\IndicatorService::class), app(\App\Services\Swing\LiquidityService::class)) extends SwingStrategy
+        {
+            public function name(): string
+            {
+                return 'Broken';
+            }
+
+            public function evaluate(SwingContext $context): SwingSignal
+            {
+                $entry = $context->bar()['high'];
+
+                return $this->ready($context, 'BUY', $entry, $entry + 3, 'test', [], entryTrigger: $entry);
+            }
+        };
+
+        $signal = $broken->evaluate($this->context(fn ($i) => 100 + $i * 0.9));
+
+        $this->assertSame(SwingSignal::NO_SETUP, $signal->state);
+        $this->assertNull($signal->setup);
     }
 }

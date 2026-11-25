@@ -16,7 +16,7 @@ class RunSwingScan extends Command implements Isolatable
 
     protected $signature = 'swing:scan {--symbols= : comma-separated list; defaults to the whole watchlist}';
 
-    protected $description = 'Run the seven swing strategies across the watchlist and store what they found';
+    protected $description = 'Run the enabled swing strategies across the watchlist and store what they found';
 
     public function handle(SwingScannerService $scanner, ScreenerService $screener): int
     {
@@ -43,8 +43,12 @@ class RunSwingScan extends Command implements Isolatable
         $bar->finish();
         $this->newLine(2);
 
+        if ($result['stale'] > 0) {
+            $this->warn($result['stale'] . ' stock(s) skipped: their prices could not be refreshed.');
+        }
+
         if ($result['scanned'] === 0) {
-            $this->error('No stock had enough history to scan. Run candles:backfill first.');
+            $this->error('No stock could be scanned: prices could not be refreshed, or there is too little history.');
 
             return self::FAILURE;
         }

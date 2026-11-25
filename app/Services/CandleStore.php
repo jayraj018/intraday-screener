@@ -3,7 +3,7 @@
 namespace App\Services;
 
 use App\Models\Candle;
-use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Carbon;
 
 /**
  * Local storage for daily and weekly candles.
@@ -21,6 +21,12 @@ class CandleStore
 {
     /** Rows per upsert. Large enough to be fast, small enough to keep the query sane. */
     protected const CHUNK = 500;
+
+    /** Minutes after the close before the provider's bar is treated as final; its feed lags. */
+    protected const SETTLE_MINUTES = 30;
+
+    /** A stored close moving by more than this on a finished bar means prices were rescaled. */
+    protected const RESCALED = 0.01;
 
     public function __construct(protected StockDataService $data)
     {
@@ -126,9 +132,108 @@ class CandleStore
      */
     public function freshen(string $symbol, string $interval = '1d', string $fullRange = '2y', string $tailRange = '3mo'): array
     {
-        $this->sync($symbol, $interval, $this->latestDate($symbol, $interval) ? $tailRange : $fullRange);
+        $stored = $this->latestDate($symbol, $interval);
+        $before = $stored ? $this->closesByDate($symbol, $interval) : [];
+
+        $this->sync($symbol, $interval, $stored ? $tailRange : $fullRange);
+
+        if ($stored && $this->wasRescaled($before, $this->closesByDate($symbol, $interval))) {
+            $this->sync($symbol, $interval, $this->fullRangeFor($symbol, $interval, $fullRange));
+        }
 
         return $this->get($symbol, $interval);
+    }
+
+    /**
+     * Candles guaranteed to include the last finished session, or an empty array when they
+     * could not be brought up to date.
+     *
+     * remember() never looks at a symbol again once it is stored, so a daily scan built on
+     * it repeats the first scan's prices for ever — including a bar downloaded half way
+     * through a session, which looks complete from the next day on. Returning nothing on
+     * failure is deliberate: a signal on old prices is worse than no signal.
+     */
+    public function current(string $symbol, string $interval = '1d', string $fullRange = '2y'): array
+    {
+        if (! $this->isCurrent($symbol, $interval)) {
+            $this->freshen($symbol, $interval, $fullRange);
+
+            if (! $this->isCurrent($symbol, $interval)) {
+                return [];
+            }
+        }
+
+        return $this->get($symbol, $interval);
+    }
+
+    /** Downloaded since the last session (or week) closed and settled? */
+    public function isCurrent(string $symbol, string $interval = '1d'): bool
+    {
+        $fetched = Candle::query()
+            ->where('symbol', strtoupper($symbol))
+            ->where('interval', $interval)
+            ->max('fetched_at');
+
+        return $fetched !== null && Carbon::parse($fetched, 'UTC')->gte($this->lastSettled($interval));
+    }
+
+    protected function lastSettled(string $interval): Carbon
+    {
+        $now = now('Asia/Kolkata');
+        $settled = $now->copy()->setTimeFromTimeString(config('screener.market_close'))->addMinutes(self::SETTLE_MINUTES);
+
+        if ($settled->gt($now)) {
+            $settled->subDay();
+        }
+
+        while ($interval === '1wk' ? ! $settled->isFriday() : $settled->isWeekend()) {
+            $settled->subDay();
+        }
+
+        return $settled;
+    }
+
+    /** @return array<string, float> */
+    protected function closesByDate(string $symbol, string $interval): array
+    {
+        return Candle::query()
+            ->where('symbol', strtoupper($symbol))
+            ->where('interval', $interval)
+            ->orderBy('date')
+            ->toBase()
+            ->pluck('close', 'date')
+            ->map(fn ($close) => (float) $close)
+            ->all();
+    }
+
+    /**
+     * A split or bonus rescales every past price. Refreshing only the tail would leave the
+     * older bars on the previous scale, and the join would read as an overnight crash.
+     *
+     * The newest stored bar is ignored: it may simply have been unfinished when stored.
+     */
+    protected function wasRescaled(array $before, array $after): bool
+    {
+        array_pop($before);
+
+        foreach ($before as $date => $close) {
+            if ($close > 0 && isset($after[$date]) && abs($after[$date] / $close - 1) > self::RESCALED) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /** Enough range to replace everything stored, so no bar is left on the old scale. */
+    protected function fullRangeFor(string $symbol, string $interval, string $fullRange): string
+    {
+        $first = Candle::query()
+            ->where('symbol', strtoupper($symbol))
+            ->where('interval', $interval)
+            ->min('date');
+
+        return $first && Carbon::parse($first)->lt(now()->subMonths(26)) ? '5y' : $fullRange;
     }
 
     /** The most recent stored date, so a re-sync knows how far behind it is. */

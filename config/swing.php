@@ -201,6 +201,24 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Disabled strategies
+    |--------------------------------------------------------------------------
+    |
+    | Left out of the scan, the analysis page and the default backtest. Both of these did
+    | worse than random entries with the same stop, target and costs, on signals from June
+    | 2025 to November 2026 across ~490 stocks (today's index members, so survivorship-biased):
+    |
+    |   Breakout Retest         24.0% wins, -0.67R per trade
+    |   Volatility Contraction  34.6% wins, -0.22R per trade
+    |   random entries          41.3% wins, -0.08R per trade
+    */
+    'disabled_strategies' => [
+        'Breakout Retest',
+        'Volatility Contraction',
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Strategy parameters
     |--------------------------------------------------------------------------
     |

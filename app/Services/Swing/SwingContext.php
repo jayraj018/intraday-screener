@@ -66,6 +66,11 @@ final class SwingContext
         return $this->regime['trend'] === 'SIDEWAYS';
     }
 
+    public function marketIsBearish(): bool
+    {
+        return $this->regime['trend'] === 'BEARISH_TREND';
+    }
+
     /** Outpaced the benchmark over every span that could be measured. */
     public function isLeadingTheMarket(): bool
     {

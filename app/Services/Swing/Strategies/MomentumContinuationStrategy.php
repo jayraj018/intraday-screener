@@ -59,6 +59,12 @@ class MomentumContinuationStrategy extends SwingStrategy
                 sprintf('%.2fx average volume, needs %.1fx', $relativeVolume ?? 0, $config['min_relative_volume'])),
         ];
 
+        // Checked first: EXTENDED tells the trader a valid setup got away, so it must not be
+        // said of a stock that never had one.
+        if (! $this->allPassed($checks)) {
+            return $this->noSetup($context, $checks);
+        }
+
         // The move has already happened. Entering here takes a different risk to the one
         // the plan describes, so it is named rather than quietly re-priced.
         $extension = ($close - $fast) / $context->atr;
@@ -66,10 +72,6 @@ class MomentumContinuationStrategy extends SwingStrategy
         if ($extension > $config['max_extension_atr']) {
             return new SwingSignal($this->name(), $context->symbol, SwingSignal::EXTENDED, $checks,
                 watchFor: sprintf('Price is %.1f ATR above its 20 EMA. Wait for a pullback towards %.2f.', $extension, $fast));
-        }
-
-        if (! $this->allPassed($checks)) {
-            return $this->noSetup($context, $checks);
         }
 
         $trigger = $context->bar()['high'];

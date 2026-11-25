@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
@@ -92,8 +93,13 @@ class StockDataService
                 continue;
             }
 
-            $candles[] = [
-                'date' => gmdate('Y-m-d', $ts),
+            // Yahoo stamps a finished week at Monday 00:00 IST, which is still Sunday in
+            // UTC, and the forming week at the moment of the request. Both are filed under
+            // that week's Monday, so one week is always exactly one row.
+            $date = Carbon::createFromTimestamp($ts, 'Asia/Kolkata')->startOfWeek(Carbon::MONDAY)->toDateString();
+
+            $candles[$date] = [
+                'date' => $date,
                 'open' => $quote['open'][$i],
                 'high' => $quote['high'][$i],
                 'low' => $quote['low'][$i],
@@ -103,7 +109,7 @@ class StockDataService
             ];
         }
 
-        return $candles;
+        return array_values($candles);
     }
 
     /**

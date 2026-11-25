@@ -51,6 +51,10 @@ class TrendPullbackStrategy extends SwingStrategy
         $nearAverage = $pullbackDistance <= $context->atr * $config['max_pullback_atr'];
 
         $checks = [
+            // Pullbacks bought while NIFTY was falling did worse than random entries
+            $this->check('Market regime', ! $context->marketIsBearish(),
+                'NIFTY is ' . ($context->regime['trend'] ?? 'UNKNOWN')),
+
             $this->check('Uptrend intact', $fastNow > $slowNow && $this->isRising($slow, 10),
                 sprintf('%d EMA %.2f above a rising %d EMA %.2f', $config['fast'], $fastNow, $config['slow'], $slowNow)),
 
@@ -79,7 +83,7 @@ class TrendPullbackStrategy extends SwingStrategy
             // watchlist case: everything is in place except the proof.
             $structureHolds = $fastNow > $slowNow && $nearAverage;
 
-            if ($structureHolds && ! $confirmation) {
+            if ($structureHolds && ! $confirmation && ! $context->marketIsBearish()) {
                 return $this->watchlist($context, $checks,
                     'At support in an intact uptrend. Waiting for a bar that closes strongly off its low.');
             }

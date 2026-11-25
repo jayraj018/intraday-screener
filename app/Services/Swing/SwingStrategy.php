@@ -72,7 +72,12 @@ abstract class SwingStrategy implements SwingStrategyInterface
 
         $distance = abs($trigger - $stop);
 
-        if ($distance <= 0) {
+        // A stop on the wrong side of the entry is not a tight stop, it is a broken plan:
+        // the distance below is absolute, so it would otherwise pass as a normal risk.
+        if ($isBuy ? $stop >= $trigger : $stop <= $trigger) {
+            $checks[] = $this->check('Stop is beyond the entry', false,
+                sprintf('Stop %.2f is not on the losing side of the %.2f entry', $stop, $trigger));
+
             return $this->noSetup($context, $checks);
         }
 

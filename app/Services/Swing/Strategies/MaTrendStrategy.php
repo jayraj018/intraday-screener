@@ -53,7 +53,7 @@ class MaTrendStrategy extends SwingStrategy
             $this->check('Trend has strength', $adx >= $config['min_adx'],
                 sprintf('ADX %.1f, needs %.0f', $adx, $config['min_adx'])),
 
-            $this->check('Market regime', ! $context->marketIsSideways(),
+            $this->check('Market regime', ! $context->marketIsSideways() && ! $context->marketIsBearish(),
                 'NIFTY is ' . ($context->regime['trend'] ?? 'UNKNOWN')),
         ];
 

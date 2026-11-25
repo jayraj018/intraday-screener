@@ -8,7 +8,7 @@ use App\Services\ScreenerService;
 use Illuminate\Support\Facades\DB;
 
 /**
- * Runs the seven strategies across the watchlist and stores what they found.
+ * Runs the enabled strategies across the watchlist and stores what they found.
  *
  * The market regime is computed once per scan, not per stock: it is a property of the
  * benchmark and identical for every symbol on a given day.
@@ -29,8 +29,28 @@ class SwingScannerService
     ) {
     }
 
-    /** @return array<int, SwingStrategyInterface> */
+    /**
+     * The strategies in use. Anything named in swing.disabled_strategies is left out of the
+     * scan, the analysis page and the default backtest alike.
+     *
+     * @return array<int, SwingStrategyInterface>
+     */
     public function strategies(): array
+    {
+        $disabled = config('swing.disabled_strategies', []);
+
+        return array_values(array_filter(
+            $this->allStrategies(),
+            fn (SwingStrategyInterface $s) => ! in_array($s->name(), $disabled, true)
+        ));
+    }
+
+    /**
+     * Every strategy, enabled or not — for measuring one that is switched off.
+     *
+     * @return array<int, SwingStrategyInterface>
+     */
+    public function allStrategies(): array
     {
         return array_map(fn ($class) => app($class), [
             Strategies\MaTrendStrategy::class,
@@ -45,13 +65,22 @@ class SwingScannerService
 
     /**
      * @param  ?callable  $afterEachSymbol  fn(string $symbol, int $kept): void
-     * @return array{scanned: int, stored: int, states: array<string, int>}
+     * @return array{scanned: int, stale: int, stored: int, states: array<string, int>}
      */
     public function scan(?array $symbols = null, ?callable $afterEachSymbol = null): array
     {
         $symbols ??= $this->screener->watchlist();
-        $benchmark = $this->candles->remember(config('swing.regime.benchmark'), '1d', '2y');
-        $regime = $this->regimes->detect($benchmark);
+        $benchmark = $this->candles->current(config('swing.regime.benchmark'), '1d');
+
+        // Without it neither the regime nor relative strength can be read. Failing leaves
+        // the previous scan in place instead of replacing it with guesses.
+        if (! $benchmark) {
+            throw new \RuntimeException('The NIFTY benchmark could not be refreshed; refusing to scan on old prices.');
+        }
+
+        // Today's bar is dropped here as well: the builder does it for the stock, but the
+        // regime is read before the builder ever sees the benchmark.
+        $regime = $this->regimes->detect($this->screener->completedDailyCandles($benchmark));
         $strategies = $this->strategies();
         $scanDate = now('Asia/Kolkata')->toDateString();
 
@@ -67,14 +96,19 @@ class SwingScannerService
         $rows = [];
         $states = [];
         $scanned = 0;
+        $stale = 0;
 
         foreach ($symbols as $symbol) {
             $kept = 0;
-            $daily = $this->candles->remember($symbol, '1d', '2y');
+            $daily = $this->candles->current($symbol, '1d');
+
+            if (! $daily) {
+                $stale++;
+            }
 
             if (count($daily) >= 260) {
                 $scanned++;
-                $context = $this->contexts->build($symbol, $daily, $this->candles->remember($symbol, '1wk', '2y'), $benchmark, $regime);
+                $context = $this->contexts->build($symbol, $daily, $this->candles->current($symbol, '1wk'), $benchmark, $regime);
 
                 if ($context) {
                     foreach ($strategies as $strategy) {
@@ -98,7 +132,7 @@ class SwingScannerService
 
         $this->store($scanDate, $rows);
 
-        return ['scanned' => $scanned, 'stored' => count($rows), 'states' => $states];
+        return ['scanned' => $scanned, 'stale' => $stale, 'stored' => count($rows), 'states' => $states];
     }
 
     protected function row(string $scanDate, SwingContext $context, SwingSignal $signal, array $holding): array

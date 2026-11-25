@@ -340,7 +340,7 @@
                     </div>
                     <div style="margin-top:12px;font-size:12px;color:var(--text-secondary)">${d.agreement.summary}</div>
                 </div>
-                <h2>What each strategy says <small>7 strategies, on the close of ${d.as_of}. A score appears only where there is a plan to score.</small></h2>
+                <h2>What each strategy says <small>${d.strategies.length} strategies, on the close of ${d.as_of}. A score appears only where there is a plan to score.</small></h2>
                 ${d.strategies.sort((a, b) => b.score - a.score).map(strategyCard).join('')}
             `;
         } catch (e) {

@@ -27,6 +27,7 @@ class BreakoutVolumeStrategy extends SwingStrategy
         $config = config('swing.strategies.breakout_volume');
         $close = $context->close();
         $bar = $context->bar();
+        $previous = $context->daily[count($context->daily) - 2];
 
         $resistance = $this->resistance($context, $config);
         $relativeVolume = $context->relativeVolume();
@@ -46,6 +47,11 @@ class BreakoutVolumeStrategy extends SwingStrategy
             // A CLOSE above it, not a wick through it
             $this->check('Closed above resistance', $close > $resistance['price'],
                 sprintf('Close %.2f vs resistance %.2f (high was %.2f)', $close, $resistance['price'], $bar['high'])),
+
+            // A level broken days ago is not being broken now. Without this the setup kept
+            // firing on every later high-volume day above the level.
+            $this->check('Fresh break', $previous['close'] <= $resistance['price'],
+                sprintf('Previous close %.2f vs resistance %.2f', $previous['close'], $resistance['price'])),
 
             $this->check('Volume confirmed', $relativeVolume !== null && $relativeVolume >= $config['min_relative_volume'],
                 sprintf('%.2fx average, needs %.1fx', $relativeVolume ?? 0, $config['min_relative_volume'])),

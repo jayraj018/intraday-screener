@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\SwingSignal;
 use App\Services\CandleStore;
+use App\Services\ScreenerService;
 use App\Services\StockDataService;
 use App\Services\Swing\MarketRegimeService;
 use App\Services\Swing\SignalScoringService;
@@ -33,6 +34,7 @@ class SwingController extends Controller
         MarketRegimeService $regimes,
         SwingScannerService $scanner,
         SignalScoringService $scoring,
+        ScreenerService $screener,
     ) {
         $symbol = preg_replace('/[^A-Z0-9&-]/', '', strtoupper((string) $request->query('symbol')));
 
@@ -55,7 +57,7 @@ class SwingController extends Controller
             $daily,
             $candles->freshen($symbol, '1wk'),
             $benchmark = $candles->freshen(config('swing.regime.benchmark'), '1d'),
-            $regimes->detect($benchmark),
+            $regimes->detect($screener->completedDailyCandles($benchmark)),
         );
 
         $signals = array_map(fn ($strategy) => $strategy->evaluate($context), $scanner->strategies());
@@ -139,7 +141,7 @@ class SwingController extends Controller
         return [
             'code' => 'NO_SETUP',
             'headline' => 'No swing setup',
-            'detail' => 'None of the seven strategies sees anything here today.',
+            'detail' => 'None of the ' . count($signals) . ' strategies sees anything here today.',
         ];
     }
 

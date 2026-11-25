@@ -239,4 +239,36 @@ class SwingContextTest extends TestCase
         $this->assertSame('UNKNOWN', $context->weeklyTrend);
         $this->assertFalse($context->weeklyTrendIsUp());
     }
+
+    /**
+     * A weekly bar is dated by its Monday but holds Friday's close. Replaying a past
+     * Wednesday must not see it, however long ago that Wednesday was.
+     */
+    public function test_a_replayed_day_cannot_see_the_rest_of_its_own_week(): void
+    {
+        $weekly = $this->weeklyBars('2024-01-01', 30);   // Mondays
+
+        $seenOn = function (string $lastDay) use ($weekly) {
+            $daily = array_values(array_filter(
+                $this->series(300, fn ($i) => 100 + $i * 0.5, start: '2023-08-01'),
+                fn ($c) => $c['date'] <= $lastDay
+            ));
+            $context = app(SwingContextBuilder::class)->build('TESTCO', $daily, $weekly, $daily, ['trend' => 'SIDEWAYS']);
+
+            return $context->weekly[array_key_last($context->weekly)]['date'];
+        };
+
+        $this->assertSame('2024-03-04', $seenOn('2024-03-13'), 'Wednesday saw its own unfinished week');
+        $this->assertSame('2024-03-04', $seenOn('2024-03-14'), 'Thursday saw its own unfinished week');
+        $this->assertSame('2024-03-11', $seenOn('2024-03-15'), 'Friday completes the week');
+        $this->assertSame('2024-03-11', $seenOn('2024-03-18'), 'Monday still has last week');
+    }
+
+    protected function weeklyBars(string $monday, int $count): array
+    {
+        return array_map(fn ($i) => [
+            'date' => date('Y-m-d', strtotime("{$monday} +{$i} weeks")),
+            'open' => 100, 'high' => 101, 'low' => 99, 'close' => 100 + $i, 'volume' => 1_000_000,
+        ], range(0, $count - 1));
+    }
 }
