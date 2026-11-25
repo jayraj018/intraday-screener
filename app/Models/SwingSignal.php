@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Services\Swing\SwingSetup;
 use Illuminate\Database\Eloquent\Model;
 
 /**
@@ -14,7 +15,7 @@ use Illuminate\Database\Eloquent\Model;
 class SwingSignal extends Model
 {
     protected $fillable = [
-        'scan_date', 'symbol', 'strategy', 'state', 'direction', 'score',
+        'scan_date', 'signal_date', 'symbol', 'strategy', 'state', 'direction', 'score',
         'signal_price', 'entry_trigger', 'stop_price', 'stop_method',
         'target1', 'target2', 'target1_r', 'target2_r',
         'holding_estimate', 'watch_for', 'checks', 'score_groups',
@@ -23,6 +24,7 @@ class SwingSignal extends Model
 
     protected $casts = [
         'scan_date' => 'date',
+        'signal_date' => 'date',
         'score' => 'integer',
         'signal_price' => 'float',
         'entry_trigger' => 'float',
@@ -50,6 +52,12 @@ class SwingSignal extends Model
     public function entryLevel(): float
     {
         return $this->entry_trigger ?? $this->signal_price;
+    }
+
+    /** The worst price still worth paying; see SwingSetup::maxEntry(). */
+    public function maxEntry(): float
+    {
+        return SwingSetup::maxEntryFrom($this->entryLevel(), $this->direction !== 'SELL');
     }
 
     public function riskPerShare(): ?float

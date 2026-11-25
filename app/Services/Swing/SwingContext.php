@@ -25,6 +25,7 @@ final class SwingContext
         public readonly ?float $atr,
         public readonly ?array $adx,
         public readonly ?float $bollingerWidth,
+        /** Over the sessions before the decision bar, which is not part of its own average */
         public readonly ?float $averageVolume,
     ) {
     }
@@ -50,10 +51,10 @@ final class SwingContext
         return array_column($this->daily, 'close');
     }
 
-    /** Relative volume on the decision bar: 1.0 is an average day. */
+    /** Relative volume on the decision bar: 1.0 is an average day. Unrounded, as it is compared. */
     public function relativeVolume(): ?float
     {
-        return $this->averageVolume > 0 ? round($this->bar()['volume'] / $this->averageVolume, 2) : null;
+        return $this->averageVolume > 0 ? $this->bar()['volume'] / $this->averageVolume : null;
     }
 
     public function marketIsTrendingUp(): bool

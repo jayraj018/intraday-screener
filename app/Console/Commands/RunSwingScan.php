@@ -38,7 +38,7 @@ class RunSwingScan extends Command implements Isolatable
         $result = $scanner->scan($symbols, function () use ($bar, &$done, $symbols) {
             $bar->advance();
             $this->recordProgress(++$done, count($symbols));
-        });
+        }, paper: ! $this->option('symbols'));
 
         $bar->finish();
         $this->newLine(2);
@@ -67,10 +67,39 @@ class RunSwingScan extends Command implements Isolatable
                 ->values()->all()
         );
 
+        $this->reportPaperLog($result['paper']);
+
         $this->newLine();
         $this->comment('Scores and thresholds are NOT TESTED — no strategy here has been validated out of sample.');
         $this->comment('View them at /swing');
 
         return self::SUCCESS;
+    }
+
+    protected function reportPaperLog(?array $paper): void
+    {
+        $this->newLine();
+
+        if ($paper === null) {
+            $this->comment('Paper log not updated: it only records scans of the whole list.');
+
+            return;
+        }
+
+        if (isset($paper['error'])) {
+            $this->error('Paper log failed: ' . $paper['error']);
+
+            return;
+        }
+
+        $this->info(sprintf(
+            'Paper log: %d plans and %d random entries logged, %d taken by the paper account; %d closed, %d opened, %d not entered.',
+            $paper['signals']['logged'], $paper['controls']['logged'], $paper['signals']['taken'],
+            $paper['resolved']['closed'], $paper['resolved']['opened'], $paper['resolved']['no_entry'],
+        ));
+
+        if ($paper['signals']['late'] > 0) {
+            $this->warn($paper['signals']['late'] . ' plan(s) were logged after their entry session opened and will not be counted. Scan after the close.');
+        }
     }
 }

@@ -15,6 +15,11 @@ Route::get('/api/swing', [SwingController::class, 'api'])
     ->middleware('throttle:60,1')
     ->name('swing.api');
 
+// The paper-trade log: every plan written down before its outcome was known.
+Route::get('/swing/paper', [SwingController::class, 'paper'])
+    ->middleware('throttle:60,1')
+    ->name('swing.paper');
+
 // Every swing strategy's verdict on one stock. Makes outbound calls to refresh that
 // symbol's candles, so it is throttled like the intraday analysis.
 Route::get('/swing/analyze', [SwingController::class, 'analyze'])

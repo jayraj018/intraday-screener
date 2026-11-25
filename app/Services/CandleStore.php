@@ -23,7 +23,7 @@ class CandleStore
     protected const CHUNK = 500;
 
     /** Minutes after the close before the provider's bar is treated as final; its feed lags. */
-    protected const SETTLE_MINUTES = 30;
+    public const SETTLE_MINUTES = 30;
 
     /** A stored close moving by more than this on a finished bar means prices were rescaled. */
     protected const RESCALED = 0.01;

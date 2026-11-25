@@ -97,6 +97,7 @@
     <div class="tabs">
         <a class="tab" href="{{ route('screener.index') }}">Intraday</a>
         <a class="tab active" href="{{ route('swing.index') }}">Swing</a>
+        <a class="tab" href="{{ route('swing.paper') }}">Paper log</a>
     </div>
 
     <h1>Swing Setups</h1>
@@ -164,6 +165,11 @@
             </div>
         </div>
 
+        <p class="sub">
+            Portfolio limits: at most {{ $limits['max_positions'] }} positions, {{ $limits['max_open_risk_percent'] }}% of capital
+            at risk and {{ $limits['max_exposure_percent'] }}% invested, filled best first and counting what the paper account holds.
+        </p>
+
         @foreach([
             ['Ready now', $ready, 'Every condition met. The entry is a resting order for the next session.', 'ok'],
             ['Watchlist', $watchlist, 'Close to triggering. Nothing to do yet — the setup has not proved itself.', 'warn'],
@@ -188,6 +194,12 @@
                                 @elseif($stock->qualifies)
                                     <span class="badge ok">{{ $stock->families }} independent families</span>
                                 @endif
+
+                                @if($tone === 'ok' && isset($decisions[$stock->symbol]))
+                                    <span class="badge {{ $decisions[$stock->symbol]['take'] ? 'ok' : 'warn' }}">
+                                        {{ $decisions[$stock->symbol]['take'] ? 'Fits limits' : 'Over limits' }} — {{ $decisions[$stock->symbol]['reason'] }}
+                                    </span>
+                                @endif
                             </div>
                         </div>
                         <div style="text-align: right;">
@@ -201,6 +213,10 @@
                             <div>
                                 <span>Entry (trigger)</span>
                                 <b>₹{{ number_format($stock->best->entryLevel(), 2) }}</b>
+                            </div>
+                            <div>
+                                <span>Do not pay above</span>
+                                <b style="color: var(--accent-orange)">₹{{ number_format($stock->best->maxEntry(), 2) }}</b>
                             </div>
                             <div>
                                 <span>Stop — {{ str_replace('_', ' ', $stock->best->stop_method) }}</span>
@@ -223,6 +239,10 @@
                                 <b style="color: var(--text-secondary)">₹{{ number_format($stock->best->signal_price, 2) }}</b>
                             </div>
                         </div>
+                    @endif
+
+                    @if($tone === 'ok' && ($validity[$stock->symbol] ?? null))
+                        <div class="watch">{{ $validity[$stock->symbol]['status'] === 'ACTIVE' ? '🕘' : '⛔' }} {{ $validity[$stock->symbol]['label'] }}</div>
                     @endif
 
                     @if($stock->best->watch_for)
@@ -262,11 +282,15 @@
 
         return `<div class="levels">
             <div><span>Entry ${plan.entry_is_trigger ? '(break above)' : '(next open)'}</span><b>${money(plan.entry)}</b></div>
+            <div><span>Do not pay above</span><b style="color:var(--accent-orange)">${money(plan.max_entry)} (${plan.risk_percent_at_max_entry}% risk)</b></div>
             <div><span>Stop — ${plan.stop_method.replace(/_/g, ' ')}</span><b style="color:var(--accent-red)">${money(plan.stop)}</b></div>
             <div><span>Target 1 · ${plan.target1_r}R</span><b style="color:var(--accent-green)">${money(plan.target1)}</b></div>
             ${plan.target2 ? `<div><span>Target 2 · ${plan.target2_r}R</span><b style="color:var(--accent-green)">${money(plan.target2)}</b></div>` : ''}
             <div><span>Risk per share</span><b>${money(plan.risk_per_share)} (${plan.risk_percent}%)</b></div>
-        </div>`;
+            <div><span>Quantity</span><b>${plan.portfolio.quantity}</b></div>
+        </div>
+        <div class="watch">${plan.valid_for.status === 'ACTIVE' ? '🕘' : '⛔'} ${plan.valid_for.label}</div>
+        <div class="watch">${plan.portfolio.take ? '✅ Fits the portfolio limits' : '⛔ Over the portfolio limits'} — ${plan.portfolio.reason}</div>`;
     }
 
     function strategyCard(s) {

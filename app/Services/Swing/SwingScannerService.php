@@ -2,6 +2,7 @@
 
 namespace App\Services\Swing;
 
+use App\Models\SwingPaperTrade;
 use App\Models\SwingSignal as SwingSignalRecord;
 use App\Services\CandleStore;
 use App\Services\ScreenerService;
@@ -26,6 +27,8 @@ class SwingScannerService
         protected SwingContextBuilder $contexts,
         protected SignalScoringService $scoring,
         protected HoldingPeriodService $holdingPeriods,
+        protected PaperTradeService $paper,
+        protected RandomControlStrategy $control,
     ) {
     }
 
@@ -65,9 +68,11 @@ class SwingScannerService
 
     /**
      * @param  ?callable  $afterEachSymbol  fn(string $symbol, int $kept): void
-     * @return array{scanned: int, stale: int, stored: int, states: array<string, int>}
+     * @param  bool  $paper  write READY plans to the paper log. Only for a scan of the whole
+     *                       list: the portfolio limits pick the best of everything on offer.
+     * @return array{scanned: int, stale: int, stored: int, states: array<string, int>, paper: ?array}
      */
-    public function scan(?array $symbols = null, ?callable $afterEachSymbol = null): array
+    public function scan(?array $symbols = null, ?callable $afterEachSymbol = null, bool $paper = false): array
     {
         $symbols ??= $this->screener->watchlist();
         $benchmark = $this->candles->current(config('swing.regime.benchmark'), '1d');
@@ -94,6 +99,8 @@ class SwingScannerService
         }
 
         $rows = [];
+        $plans = [];
+        $controls = [];
         $states = [];
         $scanned = 0;
         $stale = 0;
@@ -119,8 +126,18 @@ class SwingScannerService
                             continue;
                         }
 
-                        $rows[] = $this->row($scanDate, $context, $signal, $holding);
+                        $rows[] = $row = $this->row($scanDate, $context, $signal, $holding);
                         $kept++;
+
+                        if ($signal->isActionable()) {
+                            $plans[] = ['setup' => $signal->setup, 'score' => $row['score'], 'regime' => $row['regime_trend']];
+                        }
+                    }
+
+                    $control = $paper ? $this->control->evaluate($context) : null;
+
+                    if ($control?->isActionable()) {
+                        $controls[] = ['setup' => $control->setup, 'score' => null, 'regime' => $context->regime['trend'] ?? null];
                     }
                 }
             }
@@ -132,7 +149,31 @@ class SwingScannerService
 
         $this->store($scanDate, $rows);
 
-        return ['scanned' => $scanned, 'stale' => $stale, 'stored' => count($rows), 'states' => $states];
+        return [
+            'scanned' => $scanned, 'stale' => $stale, 'stored' => count($rows), 'states' => $states,
+            'paper' => $paper ? $this->logPaperTrades($plans, $controls, array_column($benchmark, 'date')) : null,
+        ];
+    }
+
+    /**
+     * Resolved first, so a position that closed today frees its slot for tonight's plans.
+     *
+     * A failure here is reported, not thrown: the scan itself has already succeeded, and a
+     * log that cannot be written must not take the dashboard down with it.
+     */
+    protected function logPaperTrades(array $plans, array $controls, array $sessions): array
+    {
+        try {
+            return [
+                'resolved' => $this->paper->resolve(),
+                'signals' => $this->paper->record($plans, $sessions),
+                'controls' => $this->paper->record($controls, $sessions, SwingPaperTrade::RANDOM),
+            ];
+        } catch (\Throwable $e) {
+            report($e);
+
+            return ['error' => $e->getMessage()];
+        }
     }
 
     protected function row(string $scanDate, SwingContext $context, SwingSignal $signal, array $holding): array
@@ -142,6 +183,7 @@ class SwingScannerService
 
         return [
             'scan_date' => $scanDate,
+            'signal_date' => $context->date(),
             'symbol' => $context->symbol,
             'strategy' => $signal->strategy,
             'state' => $signal->state,

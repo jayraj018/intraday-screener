@@ -37,10 +37,22 @@ class SwingBacktestService
      */
     public function walk(SwingSetup $setup, array $candles, int $signalIndex, ?callable $isInvalidated = null): ?SwingTrade
     {
+        $entry = $this->enter($setup, $candles, $signalIndex);
+
+        return is_string($entry) ? null : $this->run($setup, $candles, $entry['index'], $entry['price'], $entry['quantity'], $entry['risk'], $isInvalidated);
+    }
+
+    /**
+     * Where the plan would have been filled, or why it would not have been.
+     *
+     * @return array{index: int, price: float, quantity: int, risk: float}|string
+     */
+    public function enter(SwingSetup $setup, array $candles, int $signalIndex): array|string
+    {
         $entryIndex = $signalIndex + 1;
 
         if (! isset($candles[$entryIndex])) {
-            return null; // the signal came on the last bar; there was no session to enter on
+            return 'no_session_yet'; // the signal came on the last bar
         }
 
         $isBuy = $setup->isBuy();
@@ -53,7 +65,7 @@ class SwingBacktestService
             $entryIndex = $this->firstTriggeredBar($setup, $candles, $entryIndex);
 
             if ($entryIndex === null) {
-                return null; // never triggered inside its window; the idea expired untested
+                return 'not_triggered'; // inside its window; the idea expired untested
             }
         }
 
@@ -70,7 +82,7 @@ class SwingBacktestService
         $gap = abs($fill - $reference) / $reference * 100;
 
         if ($gap > config('swing.execution.max_entry_gap_percent')) {
-            return null;
+            return 'gapped_too_far';
         }
 
         $entry = $this->costs->slip($fill, $isBuy);
@@ -79,16 +91,16 @@ class SwingBacktestService
 
         // The open gapped through the stop: the trade was over before it began
         if ($risk <= 0 || ($isBuy ? $entry <= $setup->stop : $entry >= $setup->stop)) {
-            return null;
+            return 'opened_past_stop';
         }
 
         $quantity = $this->costs->quantity($entry, $risk);
 
         if ($quantity < 1) {
-            return null;
+            return 'too_large_to_size';
         }
 
-        return $this->run($setup, $candles, $entryIndex, $entry, $quantity, $risk, $isInvalidated);
+        return ['index' => $entryIndex, 'price' => $entry, 'quantity' => $quantity, 'risk' => $risk];
     }
 
     protected function run(SwingSetup $setup, array $candles, int $entryIndex, float $entry, int $quantity, float $risk, ?callable $isInvalidated): SwingTrade
@@ -216,7 +228,7 @@ class SwingBacktestService
      */
     protected function firstTriggeredBar(SwingSetup $setup, array $candles, int $from): ?int
     {
-        $validDays = config('swing.execution.entry_trigger_valid_days', 3);
+        $validDays = config('swing.execution.entry_trigger_valid_days', 1);
         $isBuy = $setup->isBuy();
         $last = min($from + $validDays - 1, count($candles) - 1);
 

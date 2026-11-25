@@ -3,10 +3,14 @@
 namespace App\Http\Controllers;
 
 use App\Models\SwingSignal;
+use App\Models\SwingPaperTrade;
 use App\Services\CandleStore;
 use App\Services\ScreenerService;
 use App\Services\StockDataService;
 use App\Services\Swing\MarketRegimeService;
+use App\Services\Swing\PaperTradeStatsService;
+use App\Services\Swing\PlanValidityService;
+use App\Services\Swing\PortfolioLimitService;
 use App\Services\Swing\SignalScoringService;
 use App\Services\Swing\StrategyAgreementService;
 use App\Services\Swing\SwingScannerService;
@@ -15,8 +19,11 @@ use Illuminate\Http\Request;
 
 class SwingController extends Controller
 {
-    public function __construct(protected StrategyAgreementService $agreement)
-    {
+    public function __construct(
+        protected StrategyAgreementService $agreement,
+        protected PlanValidityService $validity,
+        protected PortfolioLimitService $limits,
+    ) {
     }
 
     /**
@@ -62,6 +69,8 @@ class SwingController extends Controller
 
         $signals = array_map(fn ($strategy) => $strategy->evaluate($context), $scanner->strategies());
         $assessment = $this->agreement->assess($signals);
+        $validity = $this->validity->forSignal($context->date(), array_column($benchmark, 'date'));
+        $held = SwingPaperTrade::held()->get();
 
         // The live price, purely so the gap to the signal close is visible. The plan is
         // built on the last completed close; this is what the stock is doing since.
@@ -92,7 +101,7 @@ class SwingController extends Controller
             'weekly_trend' => $context->weeklyTrend,
             'agreement' => $assessment + ['summary' => $this->agreement->describe($assessment)],
             'strategies' => array_map(
-                fn (Signal $s) => $this->strategyPayload($s, $context, $scoring),
+                fn (Signal $s) => $this->strategyPayload($s, $context, $scoring, $validity, $held),
                 $signals
             ),
         ]);
@@ -145,9 +154,12 @@ class SwingController extends Controller
         ];
     }
 
-    protected function strategyPayload(Signal $signal, $context, SignalScoringService $scoring): array
+    protected function strategyPayload(Signal $signal, $context, SignalScoringService $scoring, array $validity, $held): array
     {
         $setup = $signal->setup;
+        $limit = $setup === null ? null : $this->limits->decide([
+            ['symbol' => $setup->symbol, 'entry' => $setup->referencePrice(), 'stop' => $setup->stop],
+        ], $held)[$setup->symbol];
 
         return [
             'strategy' => $signal->strategy,
@@ -168,6 +180,10 @@ class SwingController extends Controller
                 'target2_r' => $setup->target2 === null ? null : $setup->rMultiple($setup->target2),
                 'risk_per_share' => round($setup->plannedRisk(), 2),
                 'risk_percent' => round($setup->plannedRisk() / $setup->referencePrice() * 100, 2),
+                'max_entry' => $setup->maxEntry(),
+                'risk_percent_at_max_entry' => round(abs($setup->maxEntry() - $setup->stop) / $setup->maxEntry() * 100, 2),
+                'valid_for' => $validity,
+                'portfolio' => $limit,
             ],
         ];
     }
@@ -176,10 +192,19 @@ class SwingController extends Controller
     {
         $scanDate = SwingSignal::max('scan_date');
         $signals = $scanDate ? SwingSignal::forDate($scanDate)->orderByDesc('score')->get() : collect();
+        $ready = $this->groupBySymbol($signals->where('state', 'READY'));
+        $decisions = $this->decisions($ready);
+        $signalDate = $signals->max('signal_date');
+        $sessions = $signalDate ? $this->validity->sessionsSince($ready->min('best.signal_date')?->toDateString() ?? $signalDate->toDateString()) : [];
 
         return view('swing.index', [
             'scanDate' => $scanDate,
-            'ready' => $this->groupBySymbol($signals->where('state', 'READY')),
+            'ready' => $ready,
+            'decisions' => $decisions,
+            'validity' => $ready->mapWithKeys(fn ($s) => [$s->symbol => $s->best->signal_date
+                ? $this->validity->forSignal($s->best->signal_date->toDateString(), $sessions)
+                : null]),
+            'limits' => config('swing.portfolio'),
             'watchlist' => $this->groupBySymbol($signals->where('state', 'WATCHLIST')),
             'extended' => $this->groupBySymbol($signals->where('state', 'EXTENDED')),
             'regime' => $signals->first(),
@@ -204,6 +229,44 @@ class SwingController extends Controller
                 ? SwingSignal::forDate($scanDate)->orderByDesc('score')->get()
                 : [],
         ]);
+    }
+
+    /** Every plan ever logged and how it ended, beside random entries under the same rules. */
+    public function paper(Request $request, PaperTradeStatsService $stats)
+    {
+        $report = $stats->report();
+
+        if ($request->expectsJson()) {
+            return response()->json($report);
+        }
+
+        return view('swing.paper', [
+            'report' => $report,
+            'trades' => SwingPaperTrade::where('kind', SwingPaperTrade::SIGNAL)
+                ->orderByDesc('signal_date')->orderByDesc('id')->limit(200)->get(),
+        ]);
+    }
+
+    /**
+     * Which of tonight's stocks fit the portfolio limits, best first.
+     *
+     * Where the scan logged a decision that is the answer, because it is the one the paper
+     * account acted on. Anything else is judged against what the account holds now.
+     */
+    protected function decisions($ready): array
+    {
+        $logged = SwingPaperTrade::where('kind', SwingPaperTrade::SIGNAL)
+            ->whereNotNull('portfolio')
+            ->whereIn('signal_date', $ready->pluck('best.signal_date')->filter()->map->toDateString()->unique())
+            ->get()
+            ->keyBy('symbol');
+
+        $fresh = $this->limits->decide($ready->reject(fn ($s) => $logged->has($s->symbol))->map(fn ($s) => [
+            'symbol' => $s->symbol, 'entry' => $s->best->entryLevel(), 'stop' => $s->best->stop_price,
+        ])->values());
+
+        return $logged->map(fn ($t) => ['take' => $t->portfolio === 'TAKEN', 'reason' => $t->portfolio_reason]
+            + $this->limits->size($t->entry_trigger ?? $t->signal_price, $t->stop_price))->all() + $fresh;
     }
 
     /**

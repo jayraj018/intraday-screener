@@ -57,7 +57,9 @@ class SwingContextBuilder
             atr: $this->indicators->atr($daily, config('screener.atr_period')),
             adx: $this->indicators->adx($daily, config('swing.regime.adx_period')),
             bollingerWidth: $this->indicators->bollingerWidth($closes),
-            averageVolume: $this->indicators->averageVolume($daily),
+            // The sessions before this one. Counting the bar being judged in its own average
+            // pulls the two together: a true 3.0x day would read as 2.7x.
+            averageVolume: $this->indicators->averageVolume(array_slice($daily, 0, -1)),
         );
     }
 

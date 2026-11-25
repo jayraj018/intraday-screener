@@ -44,6 +44,26 @@ final class SwingSetup
         return $this->direction === 'BUY';
     }
 
+    /**
+     * The worst price still worth paying. Past it the backtest counts the trade as missed:
+     * the stop is further away than planned and the targets are closer.
+     *
+     * Rounded towards the plan, so the price shown is never one the backtest would refuse.
+     */
+    public function maxEntry(): float
+    {
+        return self::maxEntryFrom($this->referencePrice(), $this->isBuy());
+    }
+
+    public static function maxEntryFrom(float $reference, bool $isBuy): float
+    {
+        $gap = config('swing.execution.max_entry_gap_percent') / 100;
+
+        return $isBuy
+            ? floor(round($reference * (1 + $gap) * 100, 4)) / 100
+            : ceil(round($reference * (1 - $gap) * 100, 4)) / 100;
+    }
+
     /** Distance from the signal price to the stop — the plan's risk, before any fill. */
     public function plannedRisk(): float
     {

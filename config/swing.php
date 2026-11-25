@@ -28,9 +28,10 @@ return [
         //           cost of the pretence can be measured; it is not realistic.
         'gap_fill' => 'open',
 
-        // Sessions a resting entry order stays live. An idea that needed a week to prove
-        // itself was not the same idea by the time it did.
-        'entry_trigger_valid_days' => 3,
+        // Sessions a resting entry order stays live. One: the plan is for the session after
+        // the signal, and a stock still worth buying after that is found again by the next
+        // scan, with a plan built on the newer close.
+        'entry_trigger_valid_days' => 1,
     ],
 
     /*
@@ -91,6 +92,43 @@ return [
         'sebi_percent' => 0.0001,
         'stamp_duty_buy_percent' => 0.015,
         'gst_percent' => 18,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Portfolio limits
+    |--------------------------------------------------------------------------
+    |
+    | Sizing limits one trade; nothing limited all of them together. Forty READY stocks on
+    | a good day are mostly the same bet on the market, and taking them all is how a 1% risk
+    | per trade becomes a 40% loss. Risk is measured from entry to the original stop.
+    */
+    'portfolio' => [
+        'max_positions' => 5,           // open positions plus orders waiting to fill
+        'max_open_risk_percent' => 6.0, // of capital, if every stop were hit at once
+
+        // Without this the limits can be met with money the account does not have: 1% risk
+        // on a 3% stop is already a third of the capital in one stock.
+        'max_exposure_percent' => 100.0,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Paper-trade log
+    |--------------------------------------------------------------------------
+    |
+    | Every READY plan is written down before it can be known how it ends, then resolved by
+    | the backtest's own rules. History was read while these rules were being chosen, so
+    | this is the only evidence about them that cannot have been fitted.
+    */
+    'paper' => [
+        // Share of scanned stocks logged as random entries with the same stop, target and
+        // holding limit. A strategy that cannot beat these has no edge.
+        'random_rate' => 0.05,
+
+        // Trades cluster in the same weeks and move together, so a range worth showing
+        // needs several separate weeks, not just many trades.
+        'min_weeks' => 10,
     ],
 
     /*

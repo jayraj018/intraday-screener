@@ -271,4 +271,29 @@ class SwingContextTest extends TestCase
             'open' => 100, 'high' => 101, 'low' => 99, 'close' => 100 + $i, 'volume' => 1_000_000,
         ], range(0, $count - 1));
     }
+
+    // ------------------------------------------------------------------ volume
+
+    /** A day three times its usual volume is 3.0x. Counted in its own average it read 2.73x. */
+    public function test_a_days_volume_is_not_part_of_its_own_average(): void
+    {
+        $daily = $this->series(300, fn ($i) => 100 + $i * 0.1);
+        $daily[299]['volume'] = 3_000_000;
+
+        $context = app(SwingContextBuilder::class)->build('TESTCO', $daily, [], $daily, app(MarketRegimeService::class)->detect($daily));
+
+        $this->assertEqualsWithDelta(1_000_000, $context->averageVolume, 0.01);
+        $this->assertEqualsWithDelta(3.0, $context->relativeVolume(), 0.0001);
+    }
+
+    /** 1.496x is below a 1.5x requirement, and must not be rounded up to it. */
+    public function test_relative_volume_is_not_rounded_before_it_is_compared(): void
+    {
+        $daily = $this->series(300, fn ($i) => 100 + $i * 0.1);
+        $daily[299]['volume'] = 1_496_000;
+
+        $context = app(SwingContextBuilder::class)->build('TESTCO', $daily, [], $daily, app(MarketRegimeService::class)->detect($daily));
+
+        $this->assertLessThan(1.5, $context->relativeVolume());
+    }
 }
