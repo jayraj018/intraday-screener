@@ -6,6 +6,7 @@ use App\Models\Candle;
 use App\Models\SwingPaperTrade;
 use App\Services\Swing\PlanValidityService;
 use App\Services\Swing\PortfolioLimitService;
+use App\Services\Swing\SectorService;
 use App\Services\Swing\SwingBacktestService;
 use App\Services\Swing\SwingSetup;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -186,6 +187,40 @@ class SwingPlanLimitsTest extends TestCase
         ]);
 
         $this->assertSame(['BIG1', 'SMALL'], $this->taken($decisions));
+    }
+
+    public function test_no_more_than_two_stocks_from_one_sector_held_or_new(): void
+    {
+        \Illuminate\Support\Facades\Cache::forever(SectorService::CACHE_KEY, [
+            'S1' => 'Financial Services', 'S2' => 'Financial Services', 'S3' => 'Financial Services', 'S4' => 'Capital Goods',
+            'BANK' => 'Financial Services',
+        ]);
+
+        $this->assertSame(['S1', 'S2', 'S4', 'S5'], $this->taken(app(PortfolioLimitService::class)->decide($this->plans(5))));
+
+        $this->held('BANK');
+        $decisions = app(PortfolioLimitService::class)->decide($this->plans(5));
+
+        // S5 has no known sector, so nothing limits it
+        $this->assertSame(['S1', 'S4', 'S5'], $this->taken($decisions));
+        $this->assertStringContainsString('Already 2 in Financial Services', $decisions['S2']['reason']);
+    }
+
+    public function test_sectors_are_read_from_the_nse_index_list_and_a_failed_download_keeps_the_last_ones(): void
+    {
+        \Illuminate\Support\Facades\Http::fake(['nsearchives.nseindia.com/*' => \Illuminate\Support\Facades\Http::sequence()
+            ->push("Company Name,Industry,Symbol,Series,ISIN Code\n\"HDFC Bank Ltd.\",Financial Services,HDFCBANK,EQ,INE040A01034\nABB India Ltd.,Capital Goods,ABB,EQ,INE117A01022\n")
+            ->push('', 500)]);
+
+        $sectors = app(SectorService::class);
+
+        $this->assertSame(2, $sectors->refresh());
+        $this->assertSame('Financial Services', $sectors->of('hdfcbank'));
+
+        \Illuminate\Support\Facades\Cache::forget('nse.industry.' . config('screener.universe_index'));
+        \Illuminate\Support\Facades\Cache::forget('nse.industry.' . config('screener.universe_index') . '.last_good');
+        $this->assertSame(2, $sectors->refresh());
+        $this->assertSame('Capital Goods', $sectors->of('ABB'));
     }
 
     // --------------------------------------------------------------- dashboard

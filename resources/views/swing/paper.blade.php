@@ -67,6 +67,19 @@
         @endif
     </div>
 
+    @if($b = $report['benchmark'])
+        <div class="banner" style="border-color: rgba(139, 92, 246, .35); background: rgba(139, 92, 246, .06);">
+            <strong style="color: var(--text-primary)">Against buying the index.</strong>
+            Since {{ \Illuminate\Support\Carbon::parse($b['since'])->format('d M Y') }}:
+            paper account <b class="{{ $tone($b['account_percent']) }}">{{ sprintf('%+.2f%%', $b['account_percent']) }}</b>
+            of ₹{{ number_format(config('swing.costs.capital')) }} from {{ $b['closed'] }} closed {{ \Illuminate\Support\Str::plural('trade', $b['closed']) }},
+            NIFTY 50 (what NIFTYBEES follows) <b class="{{ $tone($b['nifty_percent']) }}">{{ sprintf('%+.2f%%', $b['nifty_percent']) }}</b>
+            to {{ \Illuminate\Support\Carbon::parse($b['until'])->format('d M Y') }}.
+            {{ $b['account_percent'] > $b['nifty_percent'] ? 'Ahead of the index so far.' : 'Behind the index: just holding NIFTYBEES did better.' }}
+            Open positions are not counted, and the index figure has no charges or dividends.
+        </div>
+    @endif
+
     <div class="scroll">
         <table>
             <thead><tr>

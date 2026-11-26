@@ -114,8 +114,12 @@
     <div class="banner">
         <strong>NOT TESTED.</strong>
         No swing strategy here has been validated out of sample. Every threshold and every scoring weight is a
-        conventional starting value, not a finding. The score ranks setups against each other — it is not a
-        probability of profit, and entry, stop and target describe a plan rather than a prediction.
+        conventional starting value, not a finding. The score is information only: in testing, picking the
+        highest scores did no better than picking at random, so nothing here is ranked by it. Entry, stop and
+        target describe a plan rather than a prediction.
+        <br><strong>Trust order:</strong> {{ $preferred }} comes first — it was the only strategy that beat random
+        stocks in both test periods. <strong>Watch only:</strong> {{ implode(', ', $watchOnlyNames) }} — shown and
+        logged on paper, but they never count as agreement, never take a paper-account slot and never send a Telegram plan.
         Signals come from the last completed daily close; the entry is the next session.
     </div>
 
@@ -167,13 +171,15 @@
 
         <p class="sub">
             Portfolio limits: at most {{ $limits['max_positions'] }} positions, {{ $limits['max_open_risk_percent'] }}% of capital
-            at risk and {{ $limits['max_exposure_percent'] }}% invested, filled best first and counting what the paper account holds.
+            at risk and {{ $limits['max_exposure_percent'] }}% invested, counting what the paper account holds. Filled in this
+            order: {{ $preferred }} first, then stocks with independent families agreeing — never by score.
         </p>
 
         @foreach([
             ['Ready now', $ready, 'Every condition met. The entry is a resting order for the next session.', 'ok'],
             ['Watchlist', $watchlist, 'Close to triggering. Nothing to do yet — the setup has not proved itself.', 'warn'],
             ['Extended', $extended, 'The setup was valid, but price has already run. Entering now takes a different risk to the plan.', 'warn'],
+            ['Watch only', $watchOnly, 'Only a watch-only strategy fired. Logged on paper to measure it; not a plan to trade.', 'watch'],
         ] as [$title, $group, $blurb, $tone])
             <h2>{{ $title }} <small>{{ $group->count() }} {{ \Illuminate\Support\Str::plural('stock', $group->count()) }} — {{ $blurb }}</small></h2>
 
@@ -184,7 +190,11 @@
                             <div class="sym">{{ $stock->symbol }}</div>
                             <div class="badges">
                                 @foreach($stock->signals as $signal)
-                                    <span class="badge">{{ $signal->strategy }}</span>
+                                    @if(\App\Services\Swing\SwingTrust::isWatchOnly($signal->strategy))
+                                        <span class="badge warn">{{ $signal->strategy }} · watch only</span>
+                                    @else
+                                        <span class="badge">{{ $signal->strategy }}</span>
+                                    @endif
                                 @endforeach
 
                                 {{-- Independent evidence, not a headcount: strategies reading the
@@ -203,7 +213,7 @@
                             </div>
                         </div>
                         <div style="text-align: right;">
-                            <div class="score">{{ $stock->score }}<small>/100</small></div>
+                            <div class="score">{{ $stock->score }}<small>/100 · info only</small></div>
                             <small style="color: var(--text-secondary); font-size: 11px;">{{ $stock->best->holding_estimate }}</small>
                         </div>
                     </div>
@@ -270,6 +280,7 @@
     const VERDICTS = {
         SETUP:      { icon: '✅', colour: 'var(--accent-green)',  border: 'rgba(16,185,129,.4)'  },
         SETUP_THIN: { icon: '⚠️', colour: 'var(--accent-orange)', border: 'rgba(245,158,11,.4)'  },
+        WATCH_ONLY: { icon: '👀', colour: 'var(--accent-orange)', border: 'rgba(245,158,11,.35)' },
         TOO_LATE:   { icon: '⏭️', colour: 'var(--accent-orange)', border: 'rgba(245,158,11,.4)'  },
         WAIT:       { icon: '⏳', colour: 'var(--accent-orange)', border: 'rgba(245,158,11,.35)' },
         NO_SETUP:   { icon: '—',  colour: 'var(--text-secondary)', border: 'var(--border-color)' },
@@ -304,9 +315,10 @@
                 <div>
                     <div class="sym" style="font-size:16px">${s.strategy}</div>
                     <div class="badges"><span class="badge">${s.family.replace(/_/g, ' ')}</span>
+                    ${s.watch_only ? '<span class="badge warn">watch only</span>' : ''}
                     <span class="badge ${s.state === 'READY' ? 'ok' : 'warn'}">${s.state.replace(/_/g, ' ')}</span></div>
                 </div>
-                ${s.plan ? `<div class="score">${s.score}<small>/100</small></div>` : ''}
+                ${s.plan ? `<div class="score">${s.score}<small>/100 · info only</small></div>` : ''}
             </div>
             ${planRows(s.plan)}
             ${s.watch_for ? `<div class="watch">⏳ ${s.watch_for}</div>` : ''}
@@ -364,8 +376,8 @@
                     </div>
                     <div style="margin-top:12px;font-size:12px;color:var(--text-secondary)">${d.agreement.summary}</div>
                 </div>
-                <h2>What each strategy says <small>${d.strategies.length} strategies, on the close of ${d.as_of}. A score appears only where there is a plan to score.</small></h2>
-                ${d.strategies.sort((a, b) => b.score - a.score).map(strategyCard).join('')}
+                <h2>What each strategy says <small>${d.strategies.length} strategies, most trusted first, on the close of ${d.as_of}. The score is information only.</small></h2>
+                ${d.strategies.map(strategyCard).join('')}
             `;
         } catch (e) {
             out.innerHTML = '<div class="card"><div style="color:var(--accent-red)">Could not reach the server. Try again in a moment.</div></div>';

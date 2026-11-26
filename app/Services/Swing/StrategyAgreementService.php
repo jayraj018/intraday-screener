@@ -24,7 +24,8 @@ class StrategyAgreementService
     {
         $config = config('swing.agreement');
 
-        $actionable = array_filter($signals, fn (SwingSignal $s) => $s->isActionable());
+        // A watch-only strategy is shown, but it has not earned a vote (swing.trust)
+        $actionable = array_filter($signals, fn (SwingSignal $s) => $s->isActionable() && ! SwingTrust::isWatchOnly($s->strategy));
 
         if (! $actionable) {
             return ['families' => 0, 'strategies' => 0, 'agreeing' => [], 'qualifies' => false, 'direction' => null];
@@ -68,7 +69,7 @@ class StrategyAgreementService
     public function describe(array $assessment): string
     {
         if ($assessment['strategies'] === 0) {
-            return 'No strategy has an actionable setup.';
+            return 'No trusted strategy has an actionable setup.';
         }
 
         if ($assessment['direction'] === null) {

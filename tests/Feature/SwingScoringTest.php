@@ -139,6 +139,9 @@ class SwingScoringTest extends TestCase
     /** Four strategies from one family is one piece of evidence, not four. */
     public function test_correlated_strategies_count_as_one_family(): void
     {
+        // Family counting on its own, before swing.trust leaves anything out
+        config(['swing.trust.watch_only' => []]);
+
         $assessment = app(StrategyAgreementService::class)->assess([
             $this->signal('MA Trend Following'),
             $this->signal('Trend Pullback'),
@@ -151,6 +154,9 @@ class SwingScoringTest extends TestCase
 
     public function test_strategies_from_different_families_are_independent_evidence(): void
     {
+        // Family counting on its own, before swing.trust leaves anything out
+        config(['swing.trust.watch_only' => []]);
+
         $assessment = app(StrategyAgreementService::class)->assess([
             $this->signal('MA Trend Following'),
             $this->signal('Breakout + Volume'),
@@ -162,14 +168,29 @@ class SwingScoringTest extends TestCase
 
     public function test_setups_pointing_both_ways_are_not_agreement(): void
     {
+        // Family counting on its own, before swing.trust leaves anything out
+        config(['swing.trust.watch_only' => []]);
+
         $assessment = app(StrategyAgreementService::class)->assess([
             $this->signal('MA Trend Following', direction: 'BUY'),
-            $this->signal('RSI Trend Reversal', direction: 'SELL'),
+            $this->signal('Breakout + Volume', direction: 'SELL'),
         ]);
 
         $this->assertSame(0, $assessment['families']);
         $this->assertFalse($assessment['qualifies']);
         $this->assertNull($assessment['direction']);
+    }
+
+    public function test_watch_only_strategies_are_not_votes(): void
+    {
+        $assessment = app(StrategyAgreementService::class)->assess([
+            $this->signal('MA Trend Following'),
+            $this->signal('Momentum Continuation'),
+            $this->signal('RSI Trend Reversal'),
+        ]);
+
+        $this->assertSame([1, 1], [$assessment['strategies'], $assessment['families']]);
+        $this->assertFalse($assessment['qualifies'], 'three families fired, but two of them are watch-only');
     }
 
     public function test_watchlist_entries_are_not_votes(): void
@@ -185,6 +206,9 @@ class SwingScoringTest extends TestCase
 
     public function test_the_description_says_when_strategies_overlap(): void
     {
+        // Family counting on its own, before swing.trust leaves anything out
+        config(['swing.trust.watch_only' => []]);
+
         $service = app(StrategyAgreementService::class);
 
         $overlapping = $service->describe($service->assess([

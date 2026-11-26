@@ -4,11 +4,13 @@ namespace App\Http\Controllers;
 
 use App\Console\Commands\CheckSwingScan;
 use App\Console\Commands\PickIntraday;
+use App\Console\Commands\ResearchScan;
 use App\Console\Commands\RunBacktest;
 use App\Console\Commands\RunMorningScreener;
 use App\Console\Commands\RunSwingScan;
 use App\Console\Commands\StoreIntradayBars;
 use App\Console\Commands\WatchIntraday;
+use App\Models\ResearchSignal;
 use App\Models\ScreenerResult;
 use App\Models\StrategyStat;
 use App\Models\SwingSignal;
@@ -41,6 +43,8 @@ class BackgroundRunController extends Controller
         'screener-picks' => ['command' => 'screener:picks', 'status_key' => PickIntraday::STATUS_CACHE_KEY],
         'intraday-store' => ['command' => 'intraday:store', 'status_key' => StoreIntradayBars::STATUS_CACHE_KEY],
         'screener-watch' => ['command' => 'screener:watch', 'status_key' => WatchIntraday::STATUS_CACHE_KEY],
+        // Gap-and-Hold with Delivery research watch; needs NSE's bhavcopy, published ~18:00 IST
+        'research-scan' => ['command' => 'research:scan', 'status_key' => ResearchScan::STATUS_CACHE_KEY],
     ];
 
     public function start(Request $request, string $job)
@@ -87,6 +91,7 @@ class BackgroundRunController extends Controller
             'screener' => ['setups_today' => ScreenerResult::where('scan_date', now()->toDateString())->count()],
             'backtest' => ['strategies_saved' => StrategyStat::count(), 'last_saved_at' => StrategyStat::max('updated_at')],
             'swing-check', 'screener-picks', 'screener-watch', 'intraday-store' => [],
+            'research-scan' => ['signals_recorded' => ResearchSignal::count()],
             'swing' => ['signals_today' => SwingSignal::where('scan_date', now('Asia/Kolkata')->toDateString())->count(), 'last_scan_date' => SwingSignal::max('scan_date')],
         };
     }

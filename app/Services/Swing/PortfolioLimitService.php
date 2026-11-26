@@ -16,7 +16,7 @@ class PortfolioLimitService
 {
     protected TradeCostService $costs;
 
-    public function __construct(TradeCostService $costs)
+    public function __construct(TradeCostService $costs, protected SectorService $sectors)
     {
         $this->costs = $costs->withRates('swing');
     }
@@ -44,6 +44,17 @@ class PortfolioLimitService
         $maxValue = $capital * $limits['max_exposure_percent'] / 100;
 
         $symbols = $held->pluck('symbol')->all();
+        $maxPerSector = $limits['max_per_sector'] ?? null;
+
+        // Five bank stocks are one bet on banks, not five trades
+        $perSector = [];
+
+        foreach ($symbols as $symbol) {
+            if ($sector = $this->sectors->of($symbol)) {
+                $perSector[$sector] = ($perSector[$sector] ?? 0) + 1;
+            }
+        }
+
         $count = $held->count();
         $risk = (float) $held->sum('planned_risk');
         $value = (float) $held->sum('planned_value');
@@ -55,11 +66,13 @@ class PortfolioLimitService
             }
 
             $size = $this->size($plan['entry'], $plan['stop']);
+            $sector = $this->sectors->of($plan['symbol']);
 
             $refusal = match (true) {
                 $size['quantity'] < 1 => 'One share already risks more than the limit per trade',
                 in_array($plan['symbol'], $symbols, true) => 'Already holding this stock',
                 $count >= $limits['max_positions'] => sprintf('All %d positions are in use', $limits['max_positions']),
+                $sector && $maxPerSector && ($perSector[$sector] ?? 0) >= $maxPerSector => sprintf('Already %d in %s, the most allowed in one sector', $maxPerSector, $sector),
                 $risk + $size['risk'] > $maxRisk => sprintf('Open risk would be %.1f%%, above the %.1f%% limit', ($risk + $size['risk']) / $capital * 100, $limits['max_open_risk_percent']),
                 $value + $size['value'] > $maxValue => sprintf('Needs ₹%s, only ₹%s is free', number_format($size['value']), number_format(max(0, $maxValue - $value))),
                 default => null,
@@ -67,6 +80,11 @@ class PortfolioLimitService
 
             if ($refusal === null) {
                 $symbols[] = $plan['symbol'];
+
+                if ($sector) {
+                    $perSector[$sector] = ($perSector[$sector] ?? 0) + 1;
+                }
+
                 $count++;
                 $risk += $size['risk'];
                 $value += $size['value'];

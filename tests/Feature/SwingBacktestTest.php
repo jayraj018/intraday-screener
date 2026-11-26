@@ -16,6 +16,8 @@ class SwingBacktestTest extends TestCase
         // test is visible rather than buried in rounding.
         config([
             'swing.execution.slippage_bps' => 0,
+            'swing.execution.stop_slippage_bps' => 0,
+            'swing.costs.dp_charge_per_sell' => 0,
             'swing.costs.brokerage_percent' => 0,
             'swing.costs.brokerage_cap' => 0,
             'swing.costs.stt_buy_percent' => 0,
@@ -124,6 +126,39 @@ class SwingBacktestTest extends TestCase
         $this->assertSame('stop', $trade->exitReason());
         $this->assertSame(480.0, $trade->exitPrice());
         $this->assertEqualsWithDelta(-1.0, $trade->rMultiple, 0.01);
+    }
+
+    public function test_a_stop_fills_beyond_the_level_by_the_stop_slippage(): void
+    {
+        config(['swing.execution.stop_slippage_bps' => 25]);
+
+        $hit = $this->walker()->walk($this->plan(), $this->candles([
+            ['o' => 500, 'h' => 502, 'l' => 475, 'c' => 478],
+        ]), 0);
+
+        $gap = $this->walker()->walk($this->plan(), $this->candles([
+            ['o' => 500, 'h' => 505, 'l' => 498, 'c' => 503],
+            ['o' => 470, 'h' => 472, 'l' => 465, 'c' => 468],
+        ]), 0);
+
+        $this->assertSame(478.8, round($hit->exitPrice(), 4), '480 less 0.25%');
+        $this->assertSame(468.825, round($gap->exitPrice(), 4), 'a gap fills at the open, then slips too');
+    }
+
+    public function test_a_target_is_not_slipped_and_every_sale_pays_the_depository_charge(): void
+    {
+        config(['swing.execution.stop_slippage_bps' => 25, 'swing.costs.dp_charge_per_sell' => 15.93]);
+
+        $trade = $this->walker()->walk($this->plan(), $this->candles([
+            ['o' => 500, 'h' => 545, 'l' => 498, 'c' => 542],
+        ]), 0);
+
+        $this->assertSame(540.0, $trade->exitPrice());
+        $this->assertSame(15.93, round($trade->costs, 2), 'one sale, no other charges in this test');
+
+        $costs = app(\App\Services\TradeCostService::class)->withRates('swing');
+        $this->assertSame([0.0, 15.93], [$costs->legCosts(500, 10, isSell: false), $costs->legCosts(500, 10, isSell: true)], 'charged on the sale only');
+        $this->assertNull(config('screener.costs.dp_charge_per_sell'), 'intraday is not delivery, so no depository charge');
     }
 
     public function test_a_position_still_open_is_closed_at_the_holding_limit(): void

@@ -51,12 +51,19 @@ Route::get('/api/backtest-stats', [BacktestController::class, 'stats'])
 // Start the daily scan or the backtest in the background (both run far longer than a web
 // request may): /api/run-screener?token=...  /api/run-backtest?token=...
 Route::get('/api/run-{job}', [BackgroundRunController::class, 'start'])
-    ->whereIn('job', ['screener', 'backtest', 'swing', 'swing-check', 'screener-picks', 'screener-watch', 'intraday-store'])
+    ->whereIn('job', ['screener', 'backtest', 'swing', 'swing-check', 'screener-picks', 'screener-watch', 'intraday-store', 'research-scan'])
     ->middleware('throttle:10,1')
     ->name('background.start');
 Route::get('/api/{job}-status', [BackgroundRunController::class, 'status'])
-    ->whereIn('job', ['screener', 'backtest', 'swing', 'swing-check', 'screener-picks', 'screener-watch', 'intraday-store'])
+    ->whereIn('job', ['screener', 'backtest', 'swing', 'swing-check', 'screener-picks', 'screener-watch', 'intraday-store', 'research-scan'])
     ->name('background.status');
 
 
     
+// Research: historical backtest evidence and the research-watch pattern (read-only, additive)
+Route::middleware('throttle:60,1')->group(function () {
+    Route::get('/research', [\App\Http\Controllers\ResearchController::class, 'index'])->name('research.index');
+    Route::get('/research/watch', [\App\Http\Controllers\ResearchController::class, 'signals'])->name('research.signals');
+    Route::get('/research/charts/{name}', [\App\Http\Controllers\ResearchController::class, 'chart'])
+        ->where('name', '[A-Za-z0-9_\-]+\.png')->name('research.chart');
+});

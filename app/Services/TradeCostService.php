@@ -19,10 +19,13 @@ class TradeCostService
 
     protected float $slippageBps;
 
+    protected float $stopSlippageBps;
+
     public function __construct()
     {
         $this->config = config('screener.costs');
         $this->slippageBps = config('screener.execution.slippage_bps');
+        $this->stopSlippageBps = config('screener.execution.stop_slippage_bps') ?? $this->slippageBps;
     }
 
     /**
@@ -34,6 +37,9 @@ class TradeCostService
         $clone = clone $this;
         $clone->config = config("{$namespace}.costs");
         $clone->slippageBps = config("{$namespace}.execution.slippage_bps");
+
+        // Settings saved before this existed have no stop slippage: they keep the old fill
+        $clone->stopSlippageBps = config("{$namespace}.execution.stop_slippage_bps") ?? 0;
 
         return $clone;
     }
@@ -87,7 +93,10 @@ class TradeCostService
         // GST applies to the broker's and exchange's fees, not to the taxes
         $gst = ($brokerage + $exchange + $sebi) * $this->config['gst_percent'] / 100;
 
-        return round($brokerage + $exchange + $sebi + $stt + $stamp + $gst, 2);
+        // Depository charge: flat per delivery sale, GST already included. Intraday has none.
+        $dp = $isSell ? (float) ($this->config['dp_charge_per_sell'] ?? 0) : 0.0;
+
+        return round($brokerage + $exchange + $sebi + $stt + $stamp + $gst + $dp, 2);
     }
 
     /**
@@ -113,6 +122,17 @@ class TradeCostService
     public function slip(float $price, bool $buying): float
     {
         $bps = $this->slippageBps / 10000;
+
+        return $buying ? $price * (1 + $bps) : $price * (1 - $bps);
+    }
+
+    /**
+     * A stop is a market order sent as the price runs through it, so it fills beyond the
+     * level — further than a calm exit at the close.
+     */
+    public function slipStop(float $price, bool $buying): float
+    {
+        $bps = $this->stopSlippageBps / 10000;
 
         return $buying ? $price * (1 + $bps) : $price * (1 - $bps);
     }

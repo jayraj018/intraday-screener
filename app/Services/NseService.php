@@ -43,6 +43,46 @@ class NseService
     }
 
     /**
+     * Each stock's industry in an NSE index ("Financial Services", "Capital Goods"...), from
+     * the same list as indexSymbols(). Today's classification, not a history.
+     *
+     * @return array<string, string> symbol => industry
+     */
+    public function indexIndustries(string $index): array
+    {
+        return $this->remember("nse.industry.{$index}", now()->addDay(), function () use ($index) {
+            $response = Http::withHeaders($this->headers)->timeout(20)->retry(2, 500, throw: false)
+                ->get("https://nsearchives.nseindia.com/content/indices/ind_{$index}list.csv");
+
+            if (! $response->successful()) {
+                return null;
+            }
+
+            $lines = preg_split('/\r?\n/', trim($response->body()));
+            $header = str_getcsv(array_shift($lines), escape: '');
+            $symbol = array_search('Symbol', $header);
+            $industry = array_search('Industry', $header);
+
+            if ($symbol === false || $industry === false) {
+                return null;
+            }
+
+            $map = [];
+
+            foreach ($lines as $line) {
+                $row = str_getcsv($line, escape: '');
+                $key = strtoupper(trim($row[$symbol] ?? ''));
+
+                if ($key !== '' && trim($row[$industry] ?? '') !== '') {
+                    $map[$key] = trim($row[$industry]);
+                }
+            }
+
+            return $map ?: null;
+        }) ?? [];
+    }
+
+    /**
      * Board meetings (results, dividends, fund raising, buybacks...) between two dates,
      * one row per company per day.
      *

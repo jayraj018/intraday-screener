@@ -12,8 +12,13 @@ return [
         // the next session's open.
         'entry' => 'next_open',
 
-        // Against you on every leg, in basis points (5 = 0.05%)
-        'slippage_bps' => 5,
+        // Against you on every leg, in basis points (10 = 0.10%). Raised from 5 on 26 Nov 2026
+        // to match the NSE research (research/FINAL_SWING_TRADING_RESEARCH.md).
+        'slippage_bps' => 10,
+
+        // A stop is a market order into a falling price, so it fills worse than a calm exit:
+        // this many basis points beyond the stop (or beyond the open, when it gaps through).
+        'stop_slippage_bps' => 25,
 
         // A swing position is exposed overnight, so the entry itself can gap. Past this
         // distance from the signal price the setup counts as missed rather than chased —
@@ -92,6 +97,10 @@ return [
         'sebi_percent' => 0.0001,
         'stamp_duty_buy_percent' => 0.015,
         'gst_percent' => 18,
+
+        // CDSL/NSDL depository charge, per stock per day sold from delivery, GST included.
+        // Flat, so on a small account it is a real share of every trade. Check your broker's.
+        'dp_charge_per_sell' => 15.93,
     ],
 
     /*
@@ -110,6 +119,10 @@ return [
         // Without this the limits can be met with money the account does not have: 1% risk
         // on a 3% stop is already a third of the capital in one stock.
         'max_exposure_percent' => 100.0,
+
+        // Stocks in one sector move together, so this many is already one large bet. From the
+        // NSE research's ₹50,000 account; the sector is NSE's industry label for the stock.
+        'max_per_sector' => 2,
     ],
 
     /*
@@ -253,6 +266,55 @@ return [
     'disabled_strategies' => [
         'Breakout Retest',
         'Volatility Contraction',
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Which strategies to trust, and in what order
+    |--------------------------------------------------------------------------
+    |
+    | From the audit of 25-26 Nov 2026 (same stops, targets and charges as the app; today's
+    | index members, so every number is flattered; compared with random entries in the
+    | same weeks):
+    |
+    |   MA Trend Following     beat random in Dec 2022-Mar 2025 AND Jun 2025-Sep 2026
+    |   Trend Pullback,
+    |   Breakout + Volume      a little better than random, not proven
+    |   Momentum Continuation,
+    |   RSI Trend Reversal     no better than random in either period
+    |
+    | Then research/FINAL_SWING_TRADING_RESEARCH.md (official NSE bhavcopy, no survivorship
+    | bias, Nov 2024 - Nov 2026): trend pullback, breakout, momentum, relative-strength and RSI
+    | rules all LOST after charges, most of them even before charges. So only MA Trend, which
+    | that study did not re-test, is left trusted — and it is unproven too. A "Strength Leader"
+    | rule tried here on 26 Nov was removed the same day: its family failed in that study.
+    |
+    | And the signal score did not pick winners: taking the five highest-scored READY stocks
+    | did no better than taking five of them at random. So the score is shown, but nothing
+    | is ranked by it.
+    |
+    | `order` decides which plan a stock's card shows and which stocks the paper account takes
+    | first. `watch_only` strategies are still scanned, shown and logged in the paper log, but
+    | never count as agreement, never take a paper-account slot and so never send a Telegram
+    | plan. Move one out of `watch_only` only when its own paper-log rows beat random entries.
+    */
+    'trust' => [
+        'order' => [
+            'MA Trend Following',
+            'Trend Pullback',
+            'Breakout + Volume',
+            'Breakout Retest',
+            'Volatility Contraction',
+            'Momentum Continuation',
+            'RSI Trend Reversal',
+        ],
+
+        'watch_only' => [
+            'Trend Pullback',
+            'Breakout + Volume',
+            'Momentum Continuation',
+            'RSI Trend Reversal',
+        ],
     ],
 
     /*

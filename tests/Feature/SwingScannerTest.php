@@ -118,4 +118,19 @@ class SwingScannerTest extends TestCase
 
         $this->assertSame(0, SwingSignal::whereIn('strategy', config('swing.disabled_strategies'))->count());
     }
+
+    public function test_the_dashboard_puts_a_stock_with_only_watch_only_setups_in_its_own_section(): void
+    {
+        foreach ([['MOMO', 'Momentum Continuation'], ['TREND', 'MA Trend Following'], ['TREND', 'Trend Pullback']] as [$symbol, $strategy]) {
+            SwingSignal::create([
+                'scan_date' => '2026-11-23', 'signal_date' => '2026-11-23', 'symbol' => $symbol, 'strategy' => $strategy, 'state' => 'READY',
+                'direction' => 'BUY', 'score' => $symbol === 'MOMO' ? 99 : 10, 'signal_price' => 498, 'entry_trigger' => null, 'stop_price' => 480,
+                'stop_method' => 'atr', 'target1' => 534, 'target2' => 570, 'target1_r' => 2, 'target2_r' => 4, 'checks' => [],
+            ]);
+        }
+
+        $this->get('/swing')->assertOk()
+            ->assertSeeInOrder(['Ready now', 'TREND', 'Trend Pullback · watch only', 'Watch only', 'MOMO'])
+            ->assertSee('info only');
+    }
 }

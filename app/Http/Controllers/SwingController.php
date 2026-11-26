@@ -15,6 +15,7 @@ use App\Services\Swing\SignalScoringService;
 use App\Services\Swing\StrategyAgreementService;
 use App\Services\Swing\SwingScannerService;
 use App\Services\Swing\SwingSignal as Signal;
+use App\Services\Swing\SwingTrust;
 use Illuminate\Http\Request;
 
 class SwingController extends Controller
@@ -67,7 +68,9 @@ class SwingController extends Controller
             $regimes->detect($screener->completedDailyCandles($benchmark)),
         );
 
-        $signals = array_map(fn ($strategy) => $strategy->evaluate($context), $scanner->strategies());
+        // Most trusted first, watch-only last, so the list reads in the order it is trusted
+        $strategies = SwingTrust::sort(collect($scanner->strategies()), fn ($s) => $s->name())->all();
+        $signals = array_map(fn ($strategy) => $strategy->evaluate($context), $strategies);
         $assessment = $this->agreement->assess($signals);
         $validity = $this->validity->forSignal($context->date(), array_column($benchmark, 'date'));
         $held = SwingPaperTrade::held()->get();
@@ -131,6 +134,17 @@ class SwingController extends Controller
             ];
         }
 
+        $watchOnly = array_filter($signals, fn (Signal $s) => $s->isActionable() && SwingTrust::isWatchOnly($s->strategy));
+
+        if ($watchOnly) {
+            return [
+                'code' => 'WATCH_ONLY',
+                'headline' => 'Only a watch-only strategy has a setup',
+                'detail' => implode(', ', array_map(fn (Signal $s) => $s->strategy, $watchOnly))
+                    . ' found a setup, but did no better than random stocks in testing. It is logged on paper only.',
+            ];
+        }
+
         if (in_array(Signal::EXTENDED, $states, true)) {
             return [
                 'code' => 'TOO_LATE',
@@ -164,6 +178,7 @@ class SwingController extends Controller
         return [
             'strategy' => $signal->strategy,
             'family' => config("swing.agreement.families.{$signal->strategy}", $signal->strategy),
+            'watch_only' => SwingTrust::isWatchOnly($signal->strategy),
             'state' => $signal->state,
             'score' => $scoring->score($context, $setup)['score'],
             'watch_for' => $signal->watchFor,
@@ -191,8 +206,10 @@ class SwingController extends Controller
     public function index()
     {
         $scanDate = SwingSignal::max('scan_date');
-        $signals = $scanDate ? SwingSignal::forDate($scanDate)->orderByDesc('score')->get() : collect();
-        $ready = $this->groupBySymbol($signals->where('state', 'READY'));
+        // By symbol, not score: the score picked no better than chance (swing.trust)
+        $signals = $scanDate ? SwingSignal::forDate($scanDate)->orderBy('symbol')->get() : collect();
+        $grouped = $this->groupBySymbol($signals->where('state', 'READY'));
+        $ready = $grouped->reject->watchOnly->values();
         $decisions = $this->decisions($ready);
         $signalDate = $signals->max('signal_date');
         $sessions = $signalDate ? $this->validity->sessionsSince($ready->min('best.signal_date')?->toDateString() ?? $signalDate->toDateString()) : [];
@@ -205,6 +222,9 @@ class SwingController extends Controller
                 ? $this->validity->forSignal($s->best->signal_date->toDateString(), $sessions)
                 : null]),
             'limits' => config('swing.portfolio'),
+            'watchOnly' => $grouped->filter->watchOnly->values(),
+            'preferred' => SwingTrust::preferred(),
+            'watchOnlyNames' => config('swing.trust.watch_only'),
             'watchlist' => $this->groupBySymbol($signals->where('state', 'WATCHLIST')),
             'extended' => $this->groupBySymbol($signals->where('state', 'EXTENDED')),
             'regime' => $signals->first(),
@@ -221,7 +241,8 @@ class SwingController extends Controller
             'label' => 'NOT TESTED',
             'caveats' => [
                 'No swing strategy has been validated out of sample. Every threshold and scoring weight is a conventional starting value.',
-                'Scores rank setups against each other; they are not a probability of profit.',
+                'The score is information only: in testing, picking the highest scores did no better than picking at random.',
+                'Strategies in swing.trust.watch_only did no better than random stocks in testing and are logged on paper only.',
                 'Entry, stop and target describe a plan, not a prediction.',
             ],
             'scan_date' => $scanDate,
@@ -275,24 +296,33 @@ class SwingController extends Controller
      * Grouped because agreement is a property of the stock, not of a strategy, and because
      * a stock appearing seven times down a list reads as seven opportunities when it is
      * one — which is the same double-count the family grouping exists to prevent.
+     *
+     * The plan shown is the most trusted strategy's, and stocks are ordered the way the
+     * paper account takes them (SwingTrust::rank). Watch-only strategies are listed on the
+     * card but count for nothing; a stock with only those is `watchOnly`.
      */
     protected function groupBySymbol($signals)
     {
         return $signals->groupBy('symbol')->map(function ($rows) {
-            $families = $rows->map(fn ($r) => config("swing.agreement.families.{$r->strategy}", $r->strategy))->unique();
-            $best = $rows->sortByDesc('score')->first();
+            $rows = SwingTrust::sort($rows, fn ($r) => $r->strategy);
+            $trading = $rows->reject(fn ($r) => SwingTrust::isWatchOnly($r->strategy));
+            $families = $trading->map(fn ($r) => SwingTrust::family($r->strategy))->unique();
+            $best = $rows->first();
 
             return (object) [
                 'symbol' => $best->symbol,
                 'best' => $best,
-                'signals' => $rows->sortByDesc('score')->values(),
-                'strategies' => $rows->count(),
+                'signals' => $rows,
+                'strategies' => $trading->count(),
                 'families' => $families->count(),
                 'familyNames' => $families->values()->all(),
+                // Shown for information only; nothing is ranked by it
                 'score' => (int) round($rows->avg('score')),
                 // Independent evidence, not a headcount
                 'qualifies' => $families->count() >= config('swing.agreement.min_families_agree'),
+                'watchOnly' => $trading->isEmpty(),
+                'rank' => SwingTrust::rank($trading->pluck('strategy')),
             ];
-        })->sortByDesc(fn ($s) => [$s->qualifies, $s->families, $s->score])->values();
+        })->sortByDesc('rank')->values();
     }
 }

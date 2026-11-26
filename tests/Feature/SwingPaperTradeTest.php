@@ -158,7 +158,7 @@ class SwingPaperTradeTest extends TestCase
 
         $open = $this->tradeDay('2026-11-24', 499, 520, 498, 515);
         $this->assertSame('OPEN', $open->status);
-        $this->assertEqualsWithDelta(500 * 1.0005, $open->entry_price, 0.001);
+        $this->assertEqualsWithDelta(500 * (1 + config('swing.execution.slippage_bps') / 10000), $open->entry_price, 0.001);
         $this->assertNull($open->r_multiple);
 
         $closed = $this->tradeDay('2026-11-25', 515, 545, 512, 542);
@@ -266,24 +266,56 @@ class SwingPaperTradeTest extends TestCase
 
     // ---------------------------------------------------------------- portfolio
 
-    public function test_the_paper_account_takes_the_best_five_stocks_once_each(): void
+    public function test_the_paper_account_takes_the_most_trusted_five_stocks_once_each(): void
     {
         $plans = [];
 
-        foreach (range(1, 7) as $i) {
-            $plans[] = $this->plan(['symbol' => "S{$i}", 'score' => 50 + $i]);
+        // Ranking on its own, before swing.trust leaves anything out
+        config(['swing.trust.watch_only' => []]);
+
+        // S1-S4 Trend Pullback with high scores, S5-S8 MA Trend with low ones
+        foreach (range(1, 8) as $i) {
+            $plans[] = $this->plan(['symbol' => "S{$i}", 'strategy' => $i <= 4 ? 'Trend Pullback' : 'MA Trend Following', 'score' => $i <= 4 ? 95 : 40]);
         }
 
-        $plans[] = $this->plan(['symbol' => 'S1', 'strategy' => 'Breakout + Volume', 'score' => 40]);
+        // Two independent families on S2, still not MA Trend
+        $plans[] = $this->plan(['symbol' => 'S2', 'strategy' => 'Breakout + Volume', 'score' => 90]);
 
         // 4% stops are 25% of the account each, so cash would run out before the slots do
         config(['swing.portfolio.max_exposure_percent' => 1000]);
         $result = $this->record($plans);
 
-        $this->assertSame([8, 5], [$result['logged'], $result['taken']]);
-        // Two independent families outrank any score
-        $this->assertEqualsCanonicalizing(['S1', 'S7', 'S6', 'S5', 'S4'], SwingPaperTrade::where('portfolio', 'TAKEN')->pluck('symbol')->all());
-        $this->assertSame(1, SwingPaperTrade::where('symbol', 'S1')->whereNotNull('portfolio')->count());
+        $this->assertSame([9, 5], [$result['logged'], $result['taken']]);
+        // MA Trend first, then agreement — the score decides nothing
+        $this->assertEqualsCanonicalizing(['S5', 'S6', 'S7', 'S8', 'S2'], SwingPaperTrade::where('portfolio', 'TAKEN')->pluck('symbol')->all());
+        $this->assertSame(1, SwingPaperTrade::where('symbol', 'S2')->whereNotNull('portfolio')->count());
+    }
+
+    public function test_watch_only_plans_are_logged_but_never_take_a_slot(): void
+    {
+        $result = $this->record([
+            $this->plan(['symbol' => 'PULL', 'strategy' => 'Trend Pullback']),
+            $this->plan(['symbol' => 'MOMO', 'strategy' => 'Momentum Continuation']),
+            $this->plan(['symbol' => 'BOTH', 'strategy' => 'Breakout + Volume']),
+            $this->plan(['symbol' => 'BOTH', 'strategy' => 'MA Trend Following']),
+        ]);
+
+        $this->assertSame([4, 1], [$result['logged'], $result['taken']]);
+        $this->assertSame(['BOTH' => 'MA Trend Following'], SwingPaperTrade::where('portfolio', 'TAKEN')->pluck('strategy', 'symbol')->all());
+        $this->assertSame(0, SwingPaperTrade::whereIn('symbol', ['PULL', 'MOMO'])->whereNotNull('portfolio')->count());
+    }
+
+    public function test_watch_only_strategies_get_their_own_row_and_stay_out_of_the_trusted_total(): void
+    {
+        $this->record([
+            $this->plan(['symbol' => 'MOMO', 'strategy' => 'Momentum Continuation']),
+            $this->plan(['symbol' => 'TREND']),
+        ]);
+
+        $rows = collect(app(PaperTradeStatsService::class)->report()['rows'])->keyBy('name');
+
+        $this->assertSame(1, $rows['Momentum Continuation (watch only)']['logged']);
+        $this->assertSame(1, $rows['All signals (not watch-only)']['logged']);
     }
 
     public function test_scanning_twice_in_one_evening_does_not_take_more_than_the_limit(): void
@@ -327,7 +359,7 @@ class SwingPaperTradeTest extends TestCase
         $this->finished('C', '2026-11-03', null, null);
         $this->finished('D', '2026-11-02', '2026-11-05', -1.0, ['kind' => 'random', 'strategy' => 'Random Control']);
 
-        $all = $this->statsRow('All signals');
+        $all = $this->statsRow('All signals (not watch-only)');
         $this->assertSame([2, 1, 50.0, 0.5, 2.0], [$all['closed'], $all['open'], $all['win_rate'], $all['average_r'], $all['profit_factor']]);
         $this->assertNull($all['range'], 'one week of trades is not evidence');
         $this->assertSame(1, $this->statsRow('Random entries (comparison)')['closed']);
@@ -335,6 +367,24 @@ class SwingPaperTradeTest extends TestCase
     }
 
     /** Five strategies on one move are one outcome. */
+    public function test_the_paper_account_is_compared_with_holding_nifty_from_its_first_plan(): void
+    {
+        foreach (['2026-11-19' => 20000, '2026-11-20' => 21000, '2026-11-26' => 22000] as $date => $close) {
+            \App\Models\Candle::create(['symbol' => '^NSEI', 'interval' => '1d', 'date' => $date, 'open' => $close, 'high' => $close,
+                'low' => $close, 'close' => $close, 'volume' => 0, 'fetched_at' => now()]);
+        }
+
+        $this->assertNull(app(PaperTradeStatsService::class)->report()['benchmark'], 'nothing taken yet');
+
+        $this->finished('A', '2026-11-20', '2026-11-25', 2.0, ['portfolio' => 'TAKEN', 'net_pnl' => 1500]);
+        $this->finished('B', '2026-11-21', null, null, ['portfolio' => 'TAKEN', 'status' => 'OPEN']);
+        $this->finished('C', '2026-11-20', '2026-11-25', 9.0, ['net_pnl' => 9000]);
+
+        $this->assertSame(['since' => '2026-11-20', 'until' => '2026-11-26', 'account_percent' => 1.5, 'nifty_percent' => 4.76, 'closed' => 1],
+            app(PaperTradeStatsService::class)->report()['benchmark']);
+        $this->get('/swing/paper')->assertOk()->assertSee('NIFTYBEES')->assertSee('Behind the index');
+    }
+
     public function test_overlapping_plans_on_one_stock_count_once(): void
     {
         $this->finished('A', '2026-11-02', '2026-11-10', 2.0);
@@ -343,8 +393,8 @@ class SwingPaperTradeTest extends TestCase
         $this->finished('A', '2026-11-10', '2026-11-12', 9.0);
         $this->finished('A', '2026-11-11', '2026-11-13', -1.0);
 
-        $this->assertSame([2, 1.0], [$this->statsRow('All signals')['closed'], $this->statsRow('All signals')['total_r']]);
-        $this->assertSame(1, $this->statsRow('Breakout + Volume')['closed']);
+        $this->assertSame([2, 1.0], [$this->statsRow('All signals (not watch-only)')['closed'], $this->statsRow('All signals (not watch-only)')['total_r']]);
+        $this->assertSame(1, $this->statsRow('Breakout + Volume (watch only)')['closed']);
     }
 
     public function test_an_order_that_never_filled_does_not_block_the_next(): void
@@ -352,7 +402,7 @@ class SwingPaperTradeTest extends TestCase
         $this->finished('A', '2026-11-02', null, null, ['status' => 'NO_ENTRY']);
         $this->finished('A', '2026-11-03', '2026-11-06', 1.0);
 
-        $row = $this->statsRow('All signals');
+        $row = $this->statsRow('All signals (not watch-only)');
         $this->assertSame([1, 1], [$row['closed'], $row['not_entered']]);
     }
 
@@ -360,7 +410,7 @@ class SwingPaperTradeTest extends TestCase
     {
         $this->finished('A', '2026-11-02', '2026-11-05', 5.0, ['late' => true]);
 
-        $this->assertSame(0, $this->statsRow('All signals')['closed']);
+        $this->assertSame(0, $this->statsRow('All signals (not watch-only)')['closed']);
         $this->assertSame(1, app(PaperTradeStatsService::class)->report()['late']);
     }
 
@@ -371,7 +421,7 @@ class SwingPaperTradeTest extends TestCase
             $this->finished("S{$week}", $signal->toDateString(), $signal->copy()->addDays(3)->toDateString(), $week % 2 ? 1.0 : -1.0);
         }
 
-        $range = $this->statsRow('All signals')['range'];
+        $range = $this->statsRow('All signals (not watch-only)')['range'];
         $this->assertLessThan(0, $range[0]);
         $this->assertGreaterThan(0, $range[1]);
         $this->assertEqualsWithDelta(0, $range[0] + $range[1], 0.01);

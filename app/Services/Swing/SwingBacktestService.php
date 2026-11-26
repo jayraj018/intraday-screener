@@ -129,7 +129,7 @@ class SwingBacktestService
             // cannot also gap through a level at the same moment.
             if ($d > $entryIndex) {
                 if ($this->breached($bar['open'], $stop, $isBuy)) {
-                    $exits[] = new SwingExit($bar['date'], $gapFillAtOpen ? $bar['open'] : $stop, $remaining, 'stop_gap');
+                    $exits[] = new SwingExit($bar['date'], $this->costs->slipStop($gapFillAtOpen ? $bar['open'] : $stop, ! $isBuy), $remaining, 'stop_gap');
                     $remaining = 0;
                     break;
                 }
@@ -176,7 +176,7 @@ class SwingBacktestService
 
             if ($remaining > 0 && $hitStop) {
                 $reason = $stop === $setup->stop ? 'stop' : 'trailing_stop';
-                $exits[] = new SwingExit($bar['date'], $stop, $remaining, $reason);
+                $exits[] = new SwingExit($bar['date'], $this->costs->slipStop($stop, ! $isBuy), $remaining, $reason);
                 $remaining = 0;
                 break;
             }

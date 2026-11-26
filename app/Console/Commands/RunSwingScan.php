@@ -5,6 +5,7 @@ namespace App\Console\Commands;
 use App\Console\Concerns\ReportsRunStatus;
 use App\Services\ScreenerService;
 use App\Services\Swing\SwingAlertService;
+use App\Services\Swing\SectorService;
 use App\Services\Swing\SwingScannerService;
 use Illuminate\Console\Command;
 use Illuminate\Contracts\Console\Isolatable;
@@ -21,10 +22,15 @@ class RunSwingScan extends Command implements Isolatable
 
     protected array $result = [];
 
-    public function handle(SwingScannerService $scanner, ScreenerService $screener, SwingAlertService $alerts): int
+    public function handle(SwingScannerService $scanner, ScreenerService $screener, SwingAlertService $alerts, SectorService $sectors): int
     {
         // A scan of chosen stocks is somebody looking at something, not the daily run
         $announce = ! $this->option('symbols');
+
+        // Read by the per-sector limit; the daily run keeps it fresh, nothing else fetches it
+        if ($announce) {
+            $this->line('Sectors known for ' . $sectors->refresh() . ' stocks.');
+        }
 
         try {
             $exit = $this->withRunStatus(fn () => $this->scan($scanner, $screener));

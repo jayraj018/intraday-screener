@@ -2,6 +2,7 @@
 
 namespace App\Services\Swing;
 
+use App\Models\Candle;
 use App\Models\SwingPaperTrade;
 use App\Services\ClusteredMean;
 use Illuminate\Support\Collection;
@@ -12,7 +13,7 @@ use Illuminate\Support\Collection;
 class PaperTradeStatsService
 {
     /**
-     * @return array{label: string, late: int, rows: array<int, array>}
+     * @return array{label: string, late: int, rows: array<int, array>, benchmark: ?array}
      */
     public function report(): array
     {
@@ -24,10 +25,14 @@ class PaperTradeStatsService
 
         // Already one position per stock, so nothing is dropped a second time
         $rows = [$this->row('Paper account (within limits)', $signals->where('portfolio', 'TAKEN'))];
-        $rows[] = $this->row('All signals', $this->onePerStock($signals));
+        // Watch-only strategies are measured on their own rows, not mixed into the trusted total
+        $rows[] = $this->row('All signals (not watch-only)', $this->onePerStock(
+            $signals->reject(fn ($t) => SwingTrust::isWatchOnly($t->strategy))
+        ));
 
         foreach ($signals->groupBy('strategy')->sortKeys() as $strategy => $group) {
-            $rows[] = $this->row((string) $strategy, $this->onePerStock($group));
+            $name = SwingTrust::isWatchOnly((string) $strategy) ? "{$strategy} (watch only)" : (string) $strategy;
+            $rows[] = $this->row($name, $this->onePerStock($group));
         }
 
         $rows[] = $this->row('Random entries (comparison)', $this->onePerStock($counted->where('kind', SwingPaperTrade::RANDOM)));
@@ -36,6 +41,44 @@ class PaperTradeStatsService
             'label' => 'PAPER — no money was traded',
             'late' => $trades->where('late', true)->count(),
             'rows' => $rows,
+            'benchmark' => $this->benchmark($signals->where('portfolio', 'TAKEN')),
+        ];
+    }
+
+    /**
+     * The paper account against simply holding NIFTY 50 (what NIFTYBEES tracks) from the day
+     * the account first took a plan. In the NSE research, buying the index beat every swing
+     * rule but one, so a strategy has to clear this as well as the random entries.
+     *
+     * Read from stored candles only; null until there is something to compare.
+     *
+     * @return ?array{since: string, until: string, account_percent: float, nifty_percent: float, closed: int}
+     */
+    public function benchmark(Collection $taken): ?array
+    {
+        $start = $taken->min('signal_date');
+
+        if (! $start) {
+            return null;
+        }
+
+        $nifty = Candle::where('symbol', config('swing.regime.benchmark'))->where('interval', '1d');
+        $from = (clone $nifty)->whereDate('date', '<=', $start->toDateString())->orderByDesc('date')->first();
+        $to = (clone $nifty)->orderByDesc('date')->first();
+
+        if (! $from || ! $to || $from->close <= 0) {
+            return null;
+        }
+
+        $closed = $taken->where('status', SwingPaperTrade::CLOSED);
+
+        return [
+            'since' => $from->date->toDateString(),
+            'until' => $to->date->toDateString(),
+            // Closed trades only: an open position's result is not known yet
+            'account_percent' => round((float) $closed->sum('net_pnl') / config('swing.costs.capital') * 100, 2),
+            'nifty_percent' => round(($to->close / $from->close - 1) * 100, 2),
+            'closed' => $closed->count(),
         ];
     }
 

@@ -181,20 +181,24 @@ class PaperTradeService
     /**
      * One plan per stock, best first in the dashboard's own order, against the limits.
      *
+     * Watch-only plans are logged but never take a slot (swing.trust), so they are measured
+     * without ever reaching the account or Telegram.
+     *
      * @return array<string, array>
      */
     protected function portfolio(array $plans): array
     {
-        $best = collect($plans)->groupBy(fn ($p) => $p['setup']->symbol)->map(function ($rows) {
-            $top = $rows->sortByDesc('score')->first();
-            $families = $rows->map(fn ($p) => config("swing.agreement.families.{$p['setup']->strategy}", $p['setup']->strategy))->unique()->count();
+        $trading = collect($plans)->reject(fn ($p) => SwingTrust::isWatchOnly($p['setup']->strategy));
+
+        $best = $trading->groupBy(fn ($p) => $p['setup']->symbol)->map(function ($rows) {
+            $top = SwingTrust::sort($rows, fn ($p) => $p['setup']->strategy)->first();
 
             return [
                 'symbol' => $top['setup']->symbol,
                 'strategy' => $top['setup']->strategy,
                 'entry' => $top['setup']->referencePrice(),
                 'stop' => $top['setup']->stop,
-                'rank' => [$families >= config('swing.agreement.min_families_agree'), $families, (int) round($rows->avg('score'))],
+                'rank' => SwingTrust::rank($rows->map(fn ($p) => $p['setup']->strategy)),
             ];
         })->sortByDesc('rank')->values();
 

@@ -22,3 +22,16 @@
 Homestead.json
 Homestead.yaml
 Thumbs.db
+# research/: only what the /research page reads is committed; the rest (raw NSE data,
+# Python env, scripts, every-trade files) stays local — see research/README.md
+research/*
+!research/FINAL_SWING_TRADING_RESEARCH.md
+!research/strategy_comparison.csv
+!research/charts/
+research/charts/*
+!research/charts/*.png
+!research/output/
+research/output/*
+!research/output/ranking.csv
+!research/output/portfolio_results.csv
+!research/output/summary_round1.json
