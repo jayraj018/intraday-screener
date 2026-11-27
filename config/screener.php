@@ -107,6 +107,8 @@ return [
         'min_stocks' => 100,      // fewer with fresh prices than this is a failed scan
         'start' => '09:30',       // VWAP means little in the first candles
         'summary_after' => '15:30',
+        // A BUY message sent this long after its price was read says so, with the delay
+        'late_after_seconds' => 90,
 
         // "Not above" is the price where the target still pays this many times the risk
         'min_risk_reward' => 1.5,

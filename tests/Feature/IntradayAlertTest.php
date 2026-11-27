@@ -106,6 +106,27 @@ class IntradayAlertTest extends TestCase
         $this->assertGreaterThan($alert->entry, $alert->target);
     }
 
+    public function test_the_price_time_has_seconds_and_a_fresh_message_has_no_late_note(): void
+    {
+        $this->at('2026-11-25 10:25:40');
+        $this->candles['*'] = $this->rising('2026-11-25 10:25:14');
+        $this->picked('TCS');
+        $this->watch();
+
+        $this->assertStringContainsString('at 10:25:14 — not above', $this->messages()[0]);
+        $this->assertStringNotContainsString('LATE', $this->messages()[0]);
+        $this->assertSame('10:25:14', IntradayAlert::first()->price_time);
+    }
+
+    public function test_a_message_sent_long_after_its_price_says_how_late_it_is(): void
+    {
+        $this->picked('TCS');
+        $this->watch();
+
+        // Price from 10:25:00, sent at 10:30:00
+        $this->assertStringContainsString('⏱ LATE: sent 10:30:00, 5m 00s after this price.', $this->messages()[0]);
+    }
+
     public function test_the_highest_price_still_pays_one_and_a_half_times_the_risk(): void
     {
         $this->picked('TCS');

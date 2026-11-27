@@ -175,7 +175,8 @@ class IntradayAlertService
             'alert_date' => $today,
             'kind' => $pick->kind,
             'symbol' => $pick->symbol,
-            'price_time' => $decision['as_of'],
+            // To the second, so a late message can be told apart from a late price
+            'price_time' => Carbon::createFromTimestamp($latest['timestamp'], 'Asia/Kolkata')->format('H:i:s'),
             'entry' => $decision['entry'],
             'max_entry' => $this->maxEntry($decision['stop_loss'], $decision['target']),
             'stop_loss' => $decision['stop_loss'],
@@ -223,15 +224,29 @@ class IntradayAlertService
     {
         $money = fn (float $v) => '₹' . number_format($v, 2);
 
-        return implode("\n", [
+        return implode("\n", array_filter([
             "🟢 PRACTICE BUY {$alert->symbol} x{$alert->quantity}",
             "Price {$money($alert->entry)} at {$alert->price_time} — not above {$money($alert->max_entry)}",
+            $this->lateNote($alert),
             "Stop {$money($alert->stop_loss)} · Target {$money($alert->target)}",
             'Already above ' . $money($alert->max_entry) . '? Do not buy. Below the stop? Do not buy.',
             'Sell by ' . config('screener.live.square_off_at') . ' whatever happens.',
             "Why: {$alert->reason}; now above VWAP and 20 EMA with volume.",
             '⚠️ PRACTICE — no real money. These rules lost money when tested on past prices.',
-        ]);
+        ]));
+    }
+
+    /** Said only when the price is old by the time the message goes out. */
+    protected function lateNote(IntradayAlert $alert): ?string
+    {
+        $age = now()->timestamp - $alert->candle_at;
+
+        if ($age <= config('screener.alerts.late_after_seconds')) {
+            return null;
+        }
+
+        return sprintf('⏱ LATE: sent %s, %dm %02ds after this price. Check the live price is still below the "not above" level.',
+            now('Asia/Kolkata')->format('H:i:s'), intdiv($age, 60), $age % 60);
     }
 
     protected function exitMessage(IntradayAlert $alert): string
